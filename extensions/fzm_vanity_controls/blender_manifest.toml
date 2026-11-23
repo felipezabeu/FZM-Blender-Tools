@@ -1,0 +1,9 @@
+schema_version = "1.0.0"
+id = "fzm_vanity_controls"
+version = "1.2.1"
+name = "FZM Vanity Controls"
+tagline = "Choose cabinet, top and hardware finishes and toggle splashes"
+maintainer = "FZM Renovations"
+type = "add-on"
+blender_version_min = "5.1.0"
+license = ["SPDX:GPL-3.0-or-later"]
