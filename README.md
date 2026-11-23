@@ -1,10 +1,45 @@
 # FZM Blender Tools
 
-Extensões FZM para Blender. Código-fonte, versões e futura distribuição via GitHub Pages.
+Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório contém código e as ferramentas de instalação; a geometria fica nos modelos mestre da biblioteca. Os modelos `.blend` e a biblioteca de assets ficam no **Google Drive**, em `Arquivos blender/Biblioteca_3D`.
 
-- `extensions/fzm_vanity_controls`: painel de acabamentos para Vanity Master.
-- `extensions/fzm_tile_panels`: painel de revestimentos.
+## Extensões
 
-Os modelos `.blend` e assets 3D continuam na biblioteca da FZM no Google Drive. Novas versões são publicadas após testes.
+| Extensão | Versão | Função |
+|---|---:|---|
+| FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
+| FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
 
-> O arquivo mestre da Vanity precisa ser atualizado separadamente quando a geometria muda; a extensão não modifica automaticamente modelos já importados.
+### Alterações da vanity 1.2
+- Cinza atualizado para `#777B80`, um pouco mais claro do que a proposta anterior `#62666B`.
+- Azul atualizado para `#344760`, já aprovado.
+- Adicionado **Carvalho Claro**, visual procedural inspirado na referência enviada (não textura oficial do fornecedor).
+- Removido **Carrara** do menu. **Calacatta** substituído por *Branco veios marcados*, procedural com veios cinza mais fortes, inspirado na foto de referência.
+- Materiais usam prefixo `FZM_Vanity_12_*` para não reutilizar automaticamente materiais antigos de 1.1.
+
+## Geometria da vanity
+
+A divisória interna deve ser removida do **arquivo-mestre** `FZM_Vanity_Master_30_v1.blend` (e do GLB-fonte), não por um botão do add-on. O add-on serve somente para materiais, acabamentos e splashes. Modelos já arrastados ao projeto não se atualizam automaticamente quando o mestre muda.
+
+## Instalação manual para teste
+
+No Blender, `Edit > Preferences > Get Extensions > menu > Install from Disk`, escolha o ZIP da extensão. Após ativação, a aba `N > FZM Vanity` ou `N > FZM Tile` aparecerá. A extensão da Vanity precisa encontrar uma vanity v1 com controlador `Vanity_30_Controller` e **importada como Append (não Collection Instance)**.
+
+**Não atualize diretamente o `.blend` mestre sem testar em uma cópia.** Use `Aplicar acabamentos` para testar a cor e salve o arquivo de projeto.
+
+## Publicação e atualizações remotas
+
+O workflow em `.github/workflows/pages.yml` constrói os pacotes com Blender 5.1.2, gera o `index.json` oficial de repositório de extensões e publica como GitHub Pages **após configurar Pages com fonte GitHub Actions**, num repositório acessível ao Blender (público sem autenticação).
+
+No Blender: `Edit > Preferences > Get Extensions > Repositories > + > Add Remote Repository`, usando `https://<usuario>.github.io/<repositorio>/index.json`. A nova versão será detectada após sincronização e exigirá confirmação para instalar.
+
+**Pendente:** configurar Pages como fonte GitHub Actions, publicar e testar a atualização no Blender. Arquivos instalados inicialmente via ZIP podem precisar ser migrados uma única vez ao repositório remoto.
+
+## Limites
+
+- Não são acabamentos nem modelos oficiais da Topcan/Besso. Verificar licenças e medidas para obras.
+- Shaders foram validados estaticamente, mas não testados em execução dentro do Blender 5.1.2.
+- A ferramenta Tile Panels trabalha inicialmente com superfícies retangulares; não substitui paginação construtiva ou cálculo de desperdício.
+
+## Licenças
+
+FZM Vanity Controls: GPL-3.0-or-later. FZM Tile Panels: MIT (`LICENSE.txt` na extensão).
