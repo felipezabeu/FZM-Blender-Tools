@@ -1,3 +1,4 @@
+# Fresh deployments are triggered by a new commit, not rerunning an old Pages artifact.
 name: Publish Blender Extension Repository
 on:
   push:
