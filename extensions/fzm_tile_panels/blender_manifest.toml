@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+id = "fzm_tile_panels"
+version = "1.0.0"
+name = "FZM Tile Panels"
+tagline = "Tile finish panels with sizes, grout, patterns and supplier textures"
+maintainer = "FZM Renovations"
+type = "add-on"
+blender_version_min = "4.3.0"
+license = ["SPDX:MIT"]
+
+[permissions]
+files = "Read local tile images and pack them into Blender projects"
