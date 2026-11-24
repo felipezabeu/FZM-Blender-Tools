@@ -1,6 +1,6 @@
 # FZM Builder — plano de execução e handoff
 
-> Criado em 2026-11-24. Status: PLANEJADO / NÃO IMPLEMENTADO. Requisitos aprovados pelo proprietário para iniciar desenvolvimento. Atualizar este arquivo conforme a execução; não declarar etapas concluídas sem evidência.
+> Criado em 2026-11-24. Status: PRIMEIRA ENTREGA DE DESENVOLVIMENTO / FASE A. Requisitos aprovados pelo proprietário para iniciar desenvolvimento. Atualizar este arquivo conforme a execução; não declarar etapas concluídas sem evidência.
 
 ## 0. Leia primeiro — instrução para a conta Business / executor
 
@@ -23,9 +23,9 @@ O objetivo é criar uma derivação do Home Builder 5 para o fluxo de reformas d
 - [x] Script de importação preparado: `scripts/import_home_builder.sh`.
 - [x] Pontos de extensão preliminares identificados: `operators/doors_windows.py`, `operators/walls.py`, `hb_types.py`, `geometry_nodes/` e UI. Confirmar no código e nos .blend antes de alterar.
 - [x] FZM Tile Panels existente em `extensions/fzm_tile_panels/`, com `tile_geometry.py` independente de bpy. FZM Vanity Controls também existe.
-- [!] A cópia integral ainda NÃO ocorreu: tentativa de referenciar a árvore Git upstream pelo conector retornou 422. Executar importação com Git em ambiente que consiga transferir binários.
-- [ ] Nenhuma alteração funcional de Builder foi implementada ou testada.
-- [ ] Nenhuma extensão Builder foi instalada/publicada; main e GitHub Pages de produção permanecem inalterados.
+- [x] A cópia exata foi importada em clone local. O histórico público requer primeiro a substituição da Calibri nos dois assets identificados na auditoria.
+- [x] Identidade FZM, restauração de dependências, ajustes de fonte e smoke headless implementados. Os recursos customizados B–G continuam no backlog.
+- [x] Instalação de teste em perfil isolado. Sem publicação do Builder em produção.
 
 ## 2. Resultado esperado
 
@@ -33,7 +33,7 @@ Uma única extensão FZM Builder para desenhar paredes, inserir portas/janelas/a
 
 **Critérios globais de sucesso**
 
-- [ ] Instala e habilita em perfil de teste do Blender 5.1.2 sem traceback.
+- [x] Instala e habilita em perfil Linux de teste do Blender 5.1.2 sem traceback.
 - [ ] Preserva funções úteis da baseline, inclusive geometria, snapping e edição paramétrica.
 - [ ] Portas com design visível nas duas faces e hardware/casings configuráveis.
 - [ ] Piso somente em contorno fechado válido; sem vazamento, sem duplicatas e com padrões em escala.
@@ -48,14 +48,14 @@ Estimativas abaixo são esforço de engenharia preliminar por tarefa, não prazo
 
 ### Fase A — importação e baseline (primeira entrega)
 
-- [ ] **A1 — Preparar clone limpo e ferramentas** (30–60 min; sem dependências). Verificar acesso Git de escrita, branch, Blender 5.1.2, ambiente de teste separado; registrar versões e comandos. Não usar tokens em logs.
-- [ ] **A2 — Importar upstream completo** (30–60 min; A1). Executar comandos abaixo; conferir commit, inventário, binários e licença. Commit de importação separado, sem modificações funcionais.
-- [ ] **A3 — Auditar empacotamento e licenças** (1–2 h; A2). Verificar Geometry Nodes, assets externos, Git LFS se houver, e wheels Pillow do manifesto para Python 3.13. Resolver dependências com fontes e hashes verificáveis. Verificar licença específica dos assets antes de redistribuir. Não copiar apenas Python nem remover exportação PDF para contornar dependências.
-- [ ] **A4 — Smoke test da baseline** (1–2 h; A3). Testar habilitação, paredes, portas/janelas/aberturas, comandos de porta, floor/cutter, luzes, planta de referência, cozinha e biblioteca. Registrar resultado e defeitos pré-existentes. Smoke test headless não prova funcionamento da UI.
-- [ ] **A5 — Identidade da derivação e isolamento** (1–2 h por subetapa; A4). Auditar nomes de operadores, propriedades Scene/Object, handlers, drivers, asset libraries, preferences, IDs e imports; escolher estratégia mínima segura. Nome FZM Builder, ID fzm_builder. Preservar compatibilidade das cenas e referências internas. Não fazer substituição textual global cega. Até provar coexistência, utilizar perfil separado com apenas uma extensão habilitada.
-- [ ] **A6 — Build de teste** (1–2 h; A5). Gerar ZIP instalável fora do índice de produção, verificar instalação e desinstalação; comparar baseline. Registrar hash do ZIP.
+- [x] **A1 — Preparar clone limpo e ferramentas** (30–60 min; sem dependências). Verificar acesso Git de escrita, branch, Blender 5.1.2, ambiente de teste separado; registrar versões e comandos. Não usar tokens em logs.
+- [x] **A2 — Importar upstream completo** (30–60 min; A1). Executar comandos abaixo; conferir commit, inventário, binários e licença. Commit de importação separado, sem modificações funcionais.
+- [x] **A3 — Auditar empacotamento e licenças** (1–2 h; A2). Verificar Geometry Nodes, assets externos, Git LFS se houver, e wheels Pillow do manifesto para Python 3.13. Resolver dependências com fontes e hashes verificáveis. Verificar licença específica dos assets antes de redistribuir. Não copiar apenas Python nem remover exportação PDF para contornar dependências.
+- [x] **A4 — Smoke test da baseline** (1–2 h; A3). Testar habilitação, paredes, portas/janelas/aberturas, comandos de porta, floor/cutter, luzes, planta de referência, cozinha e biblioteca. Registrar resultado e defeitos pré-existentes. Smoke test headless não prova funcionamento da UI.
+- [x] **A5 — Identidade da derivação e isolamento** (1–2 h por subetapa; A4). Auditar nomes de operadores, propriedades Scene/Object, handlers, drivers, asset libraries, preferences, IDs e imports; escolher estratégia mínima segura. Nome FZM Builder, ID fzm_builder. Preservar compatibilidade das cenas e referências internas. Não fazer substituição textual global cega. Até provar coexistência, utilizar perfil separado com apenas uma extensão habilitada.
+- [x] **A6 — Build de teste** (1–2 h; A5). Gerar ZIP instalável fora do índice de produção, verificar instalação e desinstalação; comparar baseline. Registrar hash do ZIP.
 
-Comandos de partida (somente em clone de desenvolvimento):
+Importação da referência exata (somente em clone local de desenvolvimento):
 ```bash
 git clone https://github.com/felipezabeu/FZM-Blender-Tools.git
 cd FZM-Blender-Tools
@@ -67,9 +67,8 @@ git status --short
 # Após conferir inventário e licença:
 git add extensions/fzm_builder
 git commit -m "Import Home Builder 5.1.2 pinned upstream"
-git push origin dev/fzm-builder
 ```
-Se outro executor já importou o código, validar e continuar; não repetir a importação.
+Se o código já estiver presente, valide o inventário e continue. O commit de referência com a Calibri original fica restrito à baseline local. Consulte o registro de execução para reconstruir o pacote FZM.
 
 ### Fase B — Doors (prioridade alta)
 
@@ -144,7 +143,50 @@ Contexto oficial de governança: [Segundo Cérebro (Drive)](https://drive.google
 | Data | Etapa | Evidência / status |
 |---|---|---|
 | 2026-11-24 | Preparação | Branch criada; script de importação preparado; importação não executada; especificação atualizada. |
-| — | Próxima ação | A1 → A2 em ambiente com Git completo. |
+| 2026-11-24 | Fase A | Importação local exata, auditoria e suíte A/B no Blender 5.1.2 Linux. Consulte as evidências e decisões abaixo. |
+| — | Próxima ação | B1, confirmar de onde vem a folha de uma face vista pelo proprietário e preparar fixture comparativa frente/trás. |
+
+
+### 6.1 Revisão técnica da baseline
+
+| Frente | Constatação na tag v5.1.2 | Decisão de arquitetura e critério para avançar |
+|---|---|---|
+| **Fronteira do fork** | O código já concentra snapping e colocação em `hb_snap.py` e `hb_placement.py`. `GeoNodeObject` carrega e reaproveita grupos por nome, e cenas salvas dependem de propriedades `home_builder`, chaves `IS_*_BP`, operadores, menus, sockets e drivers. | Manter a base vendorizada com commit upstream fixo, alterações pequenas por módulo e fixtures para cada atualização. Usar o ID `fzm_builder`, preferências da extensão e prefixos de Asset Library próprios. Preservar identificadores internos que os arquivos existentes usam. Não prometer coexistência com Home Builder 5. O guard cobre a ordem Home Builder habilitado antes do FZM Builder. |
+| **Portas e janelas** | `_PlaceWallObjectBase.create_placed_object` cria o cage paramétrico, a legenda e, para portas aplicáveis, `GeoNodeDoorSwing` marcado `IS_2D_ANNOTATION`. Os comandos de mão, sentido e folha dupla mudam sockets da anotação. `GeoNode5PieceDoor` é usado por cabinetry. A tag examinada não fornece folha arquitetônica, batente, casing ou ferragem no fluxo nativo de entrada. | Primeiro identificar como a instalação do proprietário produz a folha de uma face. Para a tag, planejar a geometria visível como filhos gerenciados do cage, com pivô por folha e ferragens filhas. Conservar o cage como cutter e a anotação como representação de planta. Medir se o grupo 5-piece aceita escala, espessura e perfil de porta de entrada antes de reutilizá-lo. Abertura sem folha continua sem swing; batente/casing podem ser independentes. |
+| **Piso e ambientes** | `find_wall_chains` liga fim → início em XY com 10 mm, com escolha do primeiro sucessor e um conjunto global de paredes usadas. Paredes invertidas, divisórias compartilhadas, T-junctions e níveis não têm garantia. `is_closed_loop` compara só pontos extremos. `add_floor` produz bounding box se não achar loops; ceiling e lights também usam a infraestrutura de cadeias. | Introduzir um comando FZM de piso estrito inicialmente. Reutilizar triangulação, UV métrico, slab de 10 mm e Floor Cutter. A detecção FZM fica isolada para manter luzes e tetos. Extrair segmentos em coordenadas de mundo a partir dos controles e transformações da parede e classificar suas faces por direção e espessura. Separar níveis, dividir interseções T, caminhar faces delimitadas do grafo e rejeitar contornos ambíguos, inválidos ou externos. O clique seleciona uma face interna; persistir referências dos limites e atualizar o mesmo objeto/mesh em refresh explícito para manter booleans e materiais. |
+| **Acabamentos de piso** | O piso já projeta UV planar em metros. Tile Panels trabalha com uma malha por retângulo, mas gera laterais e recorta em retângulo. Sua saída completa não resolve um piso côncavo. | Comparar shader métrico no próprio slab com uma única malha 2D recortada. Shader na superfície do slab segue o recorte do cutter sem segundo sólido. Caso a mídia por peça ou o export exijam malha, medir custo e garantir recorte em contorno e nas áreas removidas pelo cutter. Aproveitar convenções de tamanho, grout, fases e UV de Tile Panels. |
+| **Rodapés e casings** | O cutter de portas está ligado ao objeto da abertura e seu tamanho é paramétrico. O upstream também tem assets de crown/cabinetry, com origem e orientação próprias. | Compartilhar somente a seção transversal dos três perfis quando reutilizável. Fazer caminhos separados para rodapé e casing, com intervalos de exclusão projetados das portas/aberturas no limite interno. Deduzir folgas do perfil de casing real. Preservar os vínculos do ambiente para regenerar só filhos gerenciados. |
+| **Pintura** | `apply_wall_material` escreve seis sockets das paredes. `GeoNodeWall.assign_materials` contém nomes antigos para quatro sockets, enquanto o asset efetivamente expõe Inside Face, Outside Face, Left Edge e Right Edge, além de Top/Bottom Surface. | Centralizar a lista de sockets a partir do contrato verificado e reutilizar a atribuição nos modos FZM. Manter material padrão, parede override e ação de substituir todos como estados distintos. Começar por HEX/RGB manual com conversão sRGB → linear; Benjamin Moore somente com fonte autorizada. |
+| **Shower Area** | `tile_geometry.generate_panel` já fornece paginação, clipping retangular, UV por peça e limites de quantidade. Recebe polegadas e devolve metros. Os offsets são locais a cada painel. | Reusar o módulo MIT com aviso de licença, dentro do pacote Builder quando começar G1. O ZIP deve funcionar sozinho. Até haver motivo para um build compartilhado entre extensões, manter a implementação existente e checar paridade entre as duas cópias. Compor 2–3 painéis sob um controlador e converter unidades em um ponto. Calcular a fase de junta por percurso contínuo ao redor dos cantos e definir a propriedade das bordas conforme espessura e orientação dos painéis. |
+| **Persistência e regressão** | `operators/rooms.py` trabalha com cenas de projeto. Um cômodo delimitado para piso é uma entidade dentro de uma dessas cenas. As dimensões já usam metros e os operadores de colocação têm entrada imperial. | Manter a cena de projeto e o ambiente do piso como entidades distintas. Usar propriedades Blender de comprimento e conversões upstream para entrada. Fazer testes A/B com a mesma geometria, salvar/reabrir e testar a UI no Windows para snapping modal, digitação imperial, undo, edição, export e Asset Browser. |
+
+### 6.2 Evidências da primeira entrega
+
+- **Origem e inventário.** A importação local `cf62489` reproduziu a árvore upstream `0395fa0305dabfe5e288713ba61aa4a39a085efa` byte a byte. São 127 arquivos, 27 `.blend`, 35 `.png` e 11.701.920 bytes. Sem Git LFS ou submódulos no material importado. O Git HTTPS deste executor leu os dois repositórios, mas o envio direto não tinha credenciais. O plano e os scripts foram transferidos à branch pela API GitHub autenticada. A árvore completa da derivação permanece local enquanto termina a transferência dos assets. Commits locais: `cf62489` importação exata, `d72d1bf` ferramentas, `68c34f4` fontes, `ee8f783` identidade e `d91d086` testes de PDF e compatibilidade.
+- **Licença e ativos.** A licença GPL-3.0-or-later e a atribuição de Andrew Peel acompanham a base. Blender 5.1.2 abriu os 27 `.blend`; a inspeção de IDs não encontrou bibliotecas `.blend` vinculadas nem imagens externas. `assets/` traz o catálogo e os exemplos estão em `product_libraries/`. A versão instalada pelo proprietário e bibliotecas externas continuam pendentes. O arquivo de dimensão traz Calibri embutida e o de retângulo referencia uma cópia do Windows. A árvore preparada para envio parte dos mesmos 127 arquivos com esses dois assets tratados antes do primeiro commit de importação remoto. O script substitui a fonte por Bfont do Blender e valida ambos reabrindo os arquivos. A troca altera a métrica tipográfica dos textos novos e deve ser inspecionada no Windows. [Versões e licença do Home Builder](https://extensions.blender.org/add-ons/home-builder-5/versions/) · [Licenciamento da Calibri](https://learn.microsoft.com/en-us/typography/font-list/calibri) · [FAQ de redistribuição da Microsoft](https://learn.microsoft.com/en-us/typography/fonts/font-faq)
+- **Wheels e builds.** A build original falhou ao tentar incluir o primeiro wheel inexistente. `scripts/prepare_builder_wheels.py` baixou e verificou SHA-256 dos 12 wheels Pillow 12.1.1 do manifesto, para CPython 3.11 e 3.13. A árvore de código continua sem wheels rastreados. O Blender CLI construiu os cinco ZIPs declarados. A execução alvo foi no Blender Linux x64 5.1.2 (`ec6e62d40fa9`, Python 3.13.9), com o SHA-256 oficial do tarball. [Pillow no PyPI](https://pypi.org/project/pillow/12.1.1/) · [Blender 5.1](https://download.blender.org/release/Blender5.1/)
+- **Baseline e FZM.** A mesma suíte em perfis isolados passou para ambos. Criação de geometria de parede, porta simples, abertura e janela; boolean na parede; flip de mão e swing; toggle dupla; resize com driver da anotação; delete de janela; piso de 20 m² e slab de 0,20 m³, cortado para 0,19 m³; luzes; imagem de referência empacotada; gabinete base; criação de layout de planta e exportação real de PDF; save/reopen e persistência de dimensões e booleans. O teste de abertura de fixture do Home Builder no FZM passou. O piso legado em perímetro aberto foi reproduzido nas duas versões. Blender registrou avisos de relação VFont e mensagens de render Freestyle/EGL em ambos; o FZM deixou de emitir o erro de arquivo Calibri ausente nas cenas novas.
+- **Limitações do smoke.** A colocação usou os métodos de criação/corte da produção por chamadas headless. Snapping modal, controles de viewport, escala interativa da planta, duplicação e undo precisam de teste manual. O teste de layout verificou o PDF produzido e seu formato. A comparação visual da tipografia, da espessura dos traços e dos layouts ficou pendente. Projetos existentes podem manter a fonte original gravada na própria cena.
+- **Instalação e desinstalação Linux.** Num perfil separado com FZM Tile Panels 1.0.0 e FZM Vanity Controls 1.2.1, instalei e removi o FZM Builder. Tile Panels gerou 24 peças antes e depois. Vanity Controls permaneceu registrado nas duas verificações. O Asset Library FZM Builder foi removido do perfil.
+- **ZIPs de teste validados pelo CLI.** Linux x64 `b5d1c3f77d0e11ce827f78b834571a4c3df13173dfbc9bf2a7d26975fe627164`; Windows x64 `3dac9f380bdd983031b36ab8008f10047f9b4c64e0eb4388e157a01eb99bb9dc`. São hashes desta execução. A build Windows foi validada como arquivo no Linux. Ainda falta instalação, teste e validação visual no Windows.
+
+Reprodução headless a partir da árvore FZM após a transferência da derivação:
+
+```bash
+# Defina B como o caminho absoluto do Blender 5.1.2.
+python3 scripts/prepare_builder_wheels.py
+build_dir="$(mktemp -d)"
+export BLENDER_USER_RESOURCES="$(mktemp -d)"
+"$B" --command extension build --source-dir extensions/fzm_builder --output-dir "$build_dir" --split-platforms
+zip="$build_dir/fzm_builder-5.1.2-linux_x64.zip"
+"$B" --command extension validate "$zip"
+sha256sum "$zip"
+"$B" --command extension install-file -r user_default -e "$zip"
+"$B" --background --disable-autoexec --python-exit-code 1 --python scripts/smoke_builder.py -- bl_ext.user_default.fzm_builder --export-pdf
+"$B" --command extension remove user_default.fzm_builder
+```
+
+Para reproduzir a referência exata de upstream, importe a tag em checkout local isolado, instale o ZIP baseline com ID `home_builder_5` em outro perfil Blender e rode o mesmo script com módulo `bl_ext.user_default.home_builder_5`. O teste de leitura entre versões usa `--save-fixture CAMINHO` na baseline e `--load-fixture CAMINHO` no FZM. Use apenas cenas sintéticas.
 
 ---
 
@@ -152,7 +194,7 @@ Contexto oficial de governança: [Segundo Cérebro (Drive)](https://drive.google
 
 # FZM Builder — development plan
 
-Status: development specification only; no fork is installed or published yet.
+Status at drafting. See the execution log above for current status.
 
 ## Baseline and distribution
 - Upstream: https://github.com/CreativeDesigner3D/home_builder_5
