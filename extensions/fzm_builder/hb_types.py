@@ -369,6 +369,12 @@ class GeoNodeObject:
 
 
 class GeoNodeWall(GeoNodeObject):
+    MATERIAL_INPUTS = (
+        ('Top Surface',), ('Bottom Surface',),
+        ('Inside Face', 'Front Surface'), ('Outside Face', 'Back Surface'),
+        ('Left Edge', 'Left Surface'), ('Right Edge', 'Right Surface'),
+    )
+    PAINT_OVERRIDE = 'FZM_WALL_PAINT_OVERRIDE'
 
     obj_x = None
 
@@ -388,6 +394,7 @@ class GeoNodeWall(GeoNodeObject):
         self.obj['IS_WALL_BP'] = True
         self.obj['MENU_ID'] = 'HOME_BUILDER_MT_wall_commands'
         self.obj.color = add_on_prefs.wall_color
+        self.assign_materials(bpy.context)
 
         length = self.var_input('Length', 'length')
 
@@ -405,17 +412,23 @@ class GeoNodeWall(GeoNodeObject):
         hb_utils.add_driver_variables(driver,[length])
         driver.driver.expression = 'length'
 
-    def assign_materials(self,context):
-        if not context.scene.home_builder.wall_material:
-            #TODO: GET MATERIAL
-            pass
-        mat = context.scene.home_builder.wall_material
-        self.set_input("Top Surface",mat)
-        self.set_input("Bottom Surface",mat)
-        self.set_input("Left Surface",mat)
-        self.set_input("Right Surface",mat)
-        self.set_input("Front Surface",mat)
-        self.set_input("Back Surface",mat)
+    @classmethod
+    def material_inputs(cls, obj):
+        wall = cls(obj)
+        return [name for names in cls.MATERIAL_INPUTS
+                for name in names if wall.has_input(name)]
+
+    @classmethod
+    def apply_material(cls, obj, material):
+        wall = cls(obj)
+        for name in cls.material_inputs(obj):
+            wall.set_input(name, material)
+        obj.update_tag()
+
+    def assign_materials(self, context):
+        material = context.scene.home_builder.wall_material
+        if material is not None:
+            self.apply_material(self.obj, material)
 
     def connect_to_wall(self,wall):
         constraint = self.obj.constraints.new('COPY_LOCATION')

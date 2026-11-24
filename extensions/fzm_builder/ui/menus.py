@@ -80,6 +80,7 @@ class HOME_BUILDER_MT_door_commands(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator("home_builder_doors_windows.door_prompts", text="Door Prompts")
+        layout.operator("fzm_builder.door_casing")
         layout.separator()
         layout.operator("home_builder_doors_windows.flip_door_swing", text="Flip Door Swing")
         layout.operator("home_builder_doors_windows.flip_door_hand", text="Flip Door Hand")

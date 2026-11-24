@@ -341,6 +341,11 @@ class HOME_BUILDER_PT_room_layout_walls(bpy.types.Panel):
         row = col.row()
         row.prop(hb_scene, 'wall_material', text="Wall Material")
         row.operator('home_builder_walls.apply_wall_material', text="", icon='FILE_REFRESH', emboss=False)
+        row = layout.row(align=True)
+        row.operator('fzm_builder.wall_paint', icon='MATERIAL')
+        row.operator('fzm_builder.import_paint_palette', text='', icon='FILE_FOLDER')
+        layout.operator('fzm_builder.room_baseboards', icon='MOD_SOLIDIFY')
+
 
 
 # SUBPANEL: Doors & Windows

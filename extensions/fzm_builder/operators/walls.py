@@ -3052,19 +3052,14 @@ class home_builder_walls_OT_apply_wall_material(bpy.types.Operator):
             self.report({'WARNING'}, "No wall material selected")
             return {'CANCELLED'}
         
-        material_inputs = [
-            'Top Surface', 'Bottom Surface',
-            'Inside Face', 'Outside Face',
-            'Left Edge', 'Right Edge',
-        ]
         wall_count = 0
         for obj in context.scene.objects:
-            if obj.get('IS_WALL_BP'):
-                wall = hb_types.GeoNodeWall(obj)
-                for input_name in material_inputs:
-                    wall.set_input(input_name, mat)
+            if obj.get('IS_WALL_BP') and hb_types.GeoNodeWall.material_inputs(obj):
+                hb_types.GeoNodeWall.apply_material(obj, mat)
+                if hb_types.GeoNodeWall.PAINT_OVERRIDE in obj:
+                    del obj[hb_types.GeoNodeWall.PAINT_OVERRIDE]
                 wall_count += 1
-        
+
         self.report({'INFO'}, f"Applied material to {wall_count} wall(s)")
         return {'FINISHED'}
 

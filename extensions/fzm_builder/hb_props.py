@@ -161,16 +161,10 @@ def update_wall_material(self, context):
     mat = self.wall_material
     if not mat:
         return
-    material_inputs = [
-        'Top Surface', 'Bottom Surface',
-        'Inside Face', 'Outside Face',
-        'Left Edge', 'Right Edge',
-    ]
-    for obj in context.scene.objects:
-        if obj.get('IS_WALL_BP'):
-            wall = hb_types.GeoNodeWall(obj)
-            for input_name in material_inputs:
-                wall.set_input(input_name, mat)
+    for obj in self.id_data.objects:
+        if obj.get('IS_WALL_BP') and not obj.get(hb_types.GeoNodeWall.PAINT_OVERRIDE):
+            hb_types.GeoNodeWall.apply_material(obj, mat)
+
 
 class Calculator_Prompt(PropertyGroup):
     distance_value: FloatProperty(name="Distance Value",subtype='DISTANCE',precision=5)# type: ignore

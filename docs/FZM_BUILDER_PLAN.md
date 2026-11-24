@@ -102,7 +102,7 @@ Se o código já estiver presente, valide o inventário e continue. O commit de 
 ### Fase F — Wall Paint
 
 - [ ] **F1 — Aplicação de material** (1–2 h; A6). Reutilizar apply_wall_material e entradas Inside/Outside Face etc. Modos All Walls, Selected Walls e reset ao padrão; distinguir aplicação global que substitui overrides de alteração da cor padrão que os preserva. Current Room após C3 se adequado. Testar faces, duplicação, redimensionar, persistência.
-- [ ] **F2 — Investigação Benjamin Moore** (1–2 h; A6). Verificar fonte oficial/licenciada e condições de uso dos dados de cores; não presumir API pública nem autorização de scraping. Normalizar OC65/OC-65, armazenar código, nome, RGB sRGB e origem quando permitido; conversão correta sRGB para linear Blender. OC-65 é exemplo de lookup, não inventar valor RGB.
+- [x] **F2 — Investigação Benjamin Moore** (1–2 h; A6). Verificar fonte oficial/licenciada e condições de uso dos dados de cores; não presumir API pública nem autorização de scraping. Normalizar OC65/OC-65, armazenar código, nome, RGB sRGB e origem quando permitido; conversão correta sRGB para linear Blender. OC-65 é exemplo de lookup, não inventar valor RGB.
 - [ ] **F3 — UI, fallback e teste** (1–2 h; F1/F2). Campo de código, cor prévia, manual HEX/RGB e seletor; cache local permitido; erro amigável offline/código desconhecido. Nenhuma requisição obrigatória para usar a ferramenta; preview não é garantia de correspondência física da tinta. Se licença/dados não estiverem disponíveis, entregar modo manual sem inventar catálogo.
 
 ### Fase G — FZM Shower Area
@@ -189,6 +189,14 @@ sha256sum "$zip"
 Para reproduzir a referência exata de upstream, importe a tag em checkout local isolado, instale o ZIP baseline com ID `home_builder_5` em outro perfil Blender e rode o mesmo script com módulo `bl_ext.user_default.home_builder_5`. O teste de leitura entre versões usa `--save-fixture CAMINHO` na baseline e `--load-fixture CAMINHO` no FZM. Use apenas cenas sintéticas.
 
 ---
+
+### 6.3 Build de teste 5.1.3 — paletas locais no Wall Paint
+
+- A build recupera Wall Paint, casings e rodapés do ZIP de acabamentos e acrescenta a leitura de paletas Adobe Swatch Exchange com amostras RGB. O modo **Palette** busca por código ou nome. Equivalências como `OC65` e `OC-65` chegam à mesma entrada. Quando duas coleções fornecem valores diferentes para uma busca, use o campo **Palette File** para selecionar a origem. O material guarda código, nome, arquivo de origem e sRGB.
+- Para sincronizar, configure a raiz local da biblioteca FZM em **Preferences → Add-ons → FZM Builder → Asset Libraries**. Coloque os arquivos em `Paletas/Benjamin Moore/` abaixo dessa raiz. **Wall Paint** indexa os arquivos ao abrir e ao aplicar. Para trabalhar offline, mantenha a pasta disponível offline no Drive para desktop. O ícone de pasta ao lado de **Wall Paint** importa um `.ase` no perfil local.
+- O uso de HEX e RGB manual permanece disponível. As paletas originais são fornecidas pelo usuário de acordo com os termos aplicáveis e ficam fora do repositório e do ZIP. [Download oficial das paletas canadenses](https://www.benjaminmoore.com/en-ca/architects-designers/download-benjamin-moore-colour-palettes)
+- No Blender 5.1.2 Linux, a suíte `scripts/smoke_paint_palettes.py` exercita criação de material, seleção de origem, pasta compartilhada, importação, persistência e HEX/RGB. Foram verificados os 11 arquivos ASE canadenses distintos disponíveis na página durante o teste, com 3.938 códigos únicos e busca específica por coleção. A Off White oficial foi importada e aplicada no Blender como `OC65` e `OC-65`. Ainda falta validar o diálogo e o Drive sincronizado no Windows.
+- Build de desenvolvimento para teste. O workflow de publicação segue no estado anterior. Casings e rodapés dessa build também seguem sujeitos à validação interativa.
 
 ## Anexo: especificação inicial (referência técnica preservada)
 

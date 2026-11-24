@@ -7,6 +7,7 @@ from .ui import view3d_sidebar
 from .ui import menu_apend
 from .ui import menus
 from .operators import walls
+from .operators import finishes
 from .operators import doors_windows
 from .operators import layouts
 from .operators import rooms
@@ -25,7 +26,7 @@ from bpy.app.handlers import persistent
 bl_info = {
     "name": "FZM Builder",
     "author": "Andrew Peel",
-    "version": (5, 1, 2),
+    "version": (5, 1, 3),
     "blender": (5, 0, 0),
     "location": "3D Viewport Sidebar",
     "description": "Library for Designing Interior Spaces",
@@ -206,6 +207,7 @@ def register():
     hb_props_obstacles.register()
     ops_obstacles.register()
     walls.register()
+    finishes.register()
     layouts.register()
     rooms.register()
     details.register()
@@ -238,6 +240,7 @@ def unregister():
     hb_project.unregister()
     hb_props_obstacles.unregister()
     ops_obstacles.unregister()
+    finishes.unregister()
     walls.unregister()
     layouts.unregister()
     rooms.unregister()

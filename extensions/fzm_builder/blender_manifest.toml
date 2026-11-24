@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "fzm_builder"
-version = "5.1.2"
+version = "5.1.3"
 name = "FZM Builder"
 tagline = "Design renovation spaces with parametric tools"
 maintainer = "FZM Renovations"
@@ -42,7 +42,7 @@ wheels = [
 ]
 
 [permissions]
-files = "Save/load project files, export PDFs and layouts"
+files = "Save projects, read ASE palettes, export PDFs and layouts"
 
 [build]
 paths_exclude_pattern = [
