@@ -196,35 +196,36 @@ def _swap(updates):
 def room_runs(context, floor):
     """Map the floor perimeter to exact wall-side sockets and local metric x intervals."""
     context.view_layer.update()
-    edges, level = perimeter.floor_outline(floor)
+    rings, level = perimeter.floor_boundaries(floor)
     walls = [wall for wall in perimeter.physical_walls(context, level) if editable_wall(wall.obj)]
-    by_edges = [perimeter.edge_runs(edge, walls) for edge in edges]
     found = defaultdict(list)
-    for i, runs in enumerate(by_edges):
-        next_edge, previous_edge = edges[(i + 1) % len(edges)], edges[i - 1]
-        next_runs, prev_runs = by_edges[(i + 1) % len(edges)], by_edges[i - 1]
-        next_run = next_runs[0] if next_runs and next_runs[0].left <= perimeter.MATCH else None
-        prev_run = prev_runs[-1] if prev_runs and previous_edge.length - prev_runs[-1].right <= perimeter.MATCH else None
-        for j, run in enumerate(runs):
-            obj = run.face.wall.obj
-            wall = hb_types.GeoNodeWall(obj)
-            inverse = obj.matrix_world.inverted_safe()
-            left = perimeter.end_point(run, True, 0, previous_edge, prev_run) if j == 0 else run.face.at(run.edge, run.left)
-            right = perimeter.end_point(run, False, 0, next_edge, next_run) if j == len(runs)-1 else run.face.at(run.edge, run.right)
-            a, b = (inverse @ Vector((*p, level)) for p in (left, right))
-            start, end = sorted((a.x, b.x))
-            start = max(0., start)
-            end = min(wall.get_input('Length'), end)
-            if end - start <= perimeter.EPS:
-                continue
-            thickness = wall.get_input('Thickness')
-            y = (inverse @ Vector((*run.face.origin, level))).y
-            far = abs(y - thickness) < abs(y)
-            socket = next((name for name in SIDE_SOCKETS[far] if wall.has_input(name)), None)
-            if not socket:
-                continue
-            side = (1 if far else -1) * (1 if thickness >= 0 else -1)
-            found[(obj, socket, side)].append((start, end))
+    for edges in rings:
+        by_edges = [perimeter.edge_runs(edge, walls) for edge in edges]
+        for i, runs in enumerate(by_edges):
+            next_edge, previous_edge = edges[(i + 1) % len(edges)], edges[i - 1]
+            next_runs, prev_runs = by_edges[(i + 1) % len(edges)], by_edges[i - 1]
+            next_run = next_runs[0] if next_runs and next_runs[0].left <= perimeter.MATCH else None
+            prev_run = prev_runs[-1] if prev_runs and previous_edge.length - prev_runs[-1].right <= perimeter.MATCH else None
+            for j, run in enumerate(runs):
+                obj = run.face.wall.obj
+                wall = hb_types.GeoNodeWall(obj)
+                inverse = obj.matrix_world.inverted_safe()
+                left = perimeter.end_point(run, True, 0, previous_edge, prev_run) if j == 0 else run.face.at(run.edge, run.left)
+                right = perimeter.end_point(run, False, 0, next_edge, next_run) if j == len(runs)-1 else run.face.at(run.edge, run.right)
+                a, b = (inverse @ Vector((*p, level)) for p in (left, right))
+                start, end = sorted((a.x, b.x))
+                start = max(0., start)
+                end = min(wall.get_input('Length'), end)
+                if end - start <= perimeter.EPS:
+                    continue
+                thickness = wall.get_input('Thickness')
+                y = (inverse @ Vector((*run.face.origin, level))).y
+                far = abs(y - thickness) < abs(y)
+                socket = next((name for name in SIDE_SOCKETS[far] if wall.has_input(name)), None)
+                if not socket:
+                    continue
+                side = (1 if far else -1) * (1 if thickness >= 0 else -1)
+                found[(obj, socket, side)].append((start, end))
     return dict(found)
 
 

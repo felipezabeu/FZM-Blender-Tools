@@ -7,7 +7,8 @@ from .. import hb_types, hb_snap, hb_placement, units
 import math
 from mathutils import Vector
 from ..hb_details import GeoNodeText
-from . import finishes, hinged_doors, native_doors, window_content
+from . import door_swing
+from . import door_panel_fill, finishes, hinged_doors, native_doors, window_content
 
 # Single door swing options: (label, {geo node inputs})
 SINGLE_DOOR_SWINGS = [
@@ -767,6 +768,7 @@ class _PlaceWallObjectBase(bpy.types.Operator, WallObjectPlacementMixin):
             if self.INITIAL_SWING_INPUTS:
                 for k, v in self.INITIAL_SWING_INPUTS.items():
                     self.swing_obj.set_input(k, v)
+            door_swing.upgrade_annotation(self.swing_obj.obj)
 
         # Text annotation
         text = GeoNodeText()
@@ -1294,7 +1296,7 @@ def _opening_baseboards_need_refresh(door, cage, width, height, offset):
 
 
 def _apply_hinged_door(door, *, width=None, height=None, offset=None, enabled=None,
-                       style=None, pose=None, hand=None, direction=None, hardware=None, hardware_finish=None, context=None, report=None):
+                       style=None, pose=None, hand=None, direction=None, hardware=None, hardware_finish=None, panel_fill=None, context=None, report=None):
     cage = hb_types.GeoNodeCage(door)
     w = cage.get_input('Dim X') if width is None else width
     h = cage.get_input('Dim Z') if height is None else height
@@ -1308,12 +1310,12 @@ def _apply_hinged_door(door, *, width=None, height=None, offset=None, enabled=No
     if offset is not None and not math.isfinite(offset):
         raise ValueError("Use a finite wall offset.")
     swing = hinged_doors.swing_for(door)
-    if not swing and (enabled or hand is not None or direction is not None or hardware not in (None, 'NONE')):
+    if not swing and (enabled or hand is not None or direction is not None or hardware not in (None, 'NONE') or panel_fill == 'FROSTED'):
         raise ValueError("Open doorways do not have hinged leaves.")
     if enabled and (error := hinged_doors.size_error(w,h,bool(swing.get_input('Is Double')))):
         raise ValueError(error)
     if swing:
-        hinged_doors.set_visual(door,enabled,style,pose,hardware=hardware,finish=hardware_finish)
+        hinged_doors.set_visual(door,enabled,style,pose,hardware=hardware,finish=hardware_finish,fill=panel_fill)
         if hand is not None:
             swing.set_input('Is Left',hand == 'LEFT')
         if direction is not None:
@@ -1339,7 +1341,7 @@ class home_builder_doors_windows_OT_door_prompts(bpy.types.Operator):
     door_height: bpy.props.FloatProperty(name="Height", unit='LENGTH', precision=5, min=.01)
     offset: bpy.props.FloatProperty(name="Offset From Wall Start", unit='LENGTH', precision=5)
     show_leaf: bpy.props.BoolProperty(name="Show 3D Leaf")
-    leaf_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.STYLES)
+    leaf_style: bpy.props.EnumProperty(name="Leaf Style", items=hinged_doors.STYLES)
     opening_amount: bpy.props.FloatProperty(name="Open Amount", min=0., max=1., subtype='FACTOR')
 
     @classmethod
@@ -1383,6 +1385,12 @@ class home_builder_doors_windows_OT_door_prompts(bpy.types.Operator):
                 layout.prop(self,'opening_amount')
 
 
+def _edit_door_style_items(_operator, context):
+    if context and hinged_doors.cage_for(context.object):
+        return hinged_doors.STYLES
+    return native_doors.STYLES
+
+
 class FZM_OT_edit_door(bpy.types.Operator):
     """One door dialog for placed native and hinged types; casing remains separate."""
     bl_idname = 'fzm_builder.edit_door'
@@ -1394,10 +1402,11 @@ class FZM_OT_edit_door(bpy.types.Operator):
     height: bpy.props.FloatProperty(name='Height', unit='LENGTH', precision=5, min=.01)
     offset: bpy.props.FloatProperty(name='Offset From Wall Start', unit='LENGTH', precision=5)
     show_leaf: bpy.props.BoolProperty(name='Show 3D Leaf')
-    leaf_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.STYLES)
+    leaf_style: bpy.props.EnumProperty(name='Leaf Style', items=_edit_door_style_items)
     hardware: bpy.props.EnumProperty(name='Door Hardware', items=hinged_doors.HARDWARE_ITEMS, default='NONE')
     hardware_finish: bpy.props.EnumProperty(name='Hardware Finish', items=hinged_doors.FINISH_ITEMS,
                                             default=hinged_doors.DEFAULT_FINISH)
+    panel_fill: bpy.props.EnumProperty(name='Panel Fill', items=door_panel_fill.ITEMS, default='SOLID')
     bypass_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.BYPASS_STYLES)
     opening_amount: bpy.props.FloatProperty(name='Open Amount', min=0., max=1., subtype='FACTOR')
     right_hand: bpy.props.BoolProperty(name='Hinge / Pocket on Right')
@@ -1437,6 +1446,7 @@ class FZM_OT_edit_door(bpy.types.Operator):
             self.show_leaf, self.leaf_style, self.opening_amount = hinged_doors.options(door)
             self.hardware = hinged_doors.hardware_for(door)
             self.hardware_finish = hinged_doors.finish_for(door)
+            self.panel_fill = door_panel_fill.panel_fill_for(door)
             self.hinge_hand = 'LEFT' if swing.get_input('Is Left') else 'RIGHT'
             self.swing_direction = 'INSIDE' if swing.get_input('Swing Inside') else 'OUTSIDE'
         return context.window_manager.invoke_props_dialog(self,width=390)
@@ -1469,6 +1479,8 @@ class FZM_OT_edit_door(bpy.types.Operator):
             layout.prop(self,'show_leaf')
             if self.show_leaf:
                 layout.prop(self,'leaf_style')
+                if self.leaf_style == native_doors.STYLE_SHAKER_5:
+                    layout.prop(self,'panel_fill')
                 layout.prop(self,'hardware')
                 if self.hardware != 'NONE':
                     layout.prop(self,'hardware_finish')
@@ -1502,6 +1514,7 @@ class FZM_OT_edit_door(bpy.types.Operator):
                                    hand=provided('hinge_hand') if swing and not swing.get_input('Is Double') else None,
                                    direction=provided('swing_direction') if swing else None,
                                    hardware=provided('hardware'),hardware_finish=provided('hardware_finish'),
+                                   panel_fill=provided('panel_fill'),
                                    context=context,report=self.report)
         except (RuntimeError, ValueError, KeyError) as exc:
             self.report({'WARNING'},str(exc))
@@ -1582,6 +1595,19 @@ class home_builder_doors_windows_OT_window_prompts(bpy.types.Operator):
         layout.prop(self, 'show_frame')
 
 
+def _shortcut_hinge(context):
+    """Resolve an editable hinged cage/leaf without changing its pose or style."""
+    if context.mode != 'OBJECT':
+        return None,None
+    door=hinged_doors.cage_for(context.object)
+    if not door or door.library or door.override_library:
+        return None,None
+    swing=hinged_doors.swing_for(door)
+    if not swing or swing.obj.library or swing.obj.override_library:
+        return None,None
+    return door,swing
+
+
 class home_builder_doors_windows_OT_flip_door_swing(bpy.types.Operator):
     bl_idname = "home_builder_doors_windows.flip_door_swing"
     bl_label = "Flip Door Swing"
@@ -1590,10 +1616,10 @@ class home_builder_doors_windows_OT_flip_door_swing(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+        return _shortcut_hinge(context)[1] is not None
 
     def execute(self, context):
-        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
+        _,swing = _shortcut_hinge(context)
         if not swing:
             return {'CANCELLED'}
         new = not swing.get_input('Swing Inside')
@@ -1604,21 +1630,22 @@ class home_builder_doors_windows_OT_flip_door_swing(bpy.types.Operator):
 
 class home_builder_doors_windows_OT_flip_door_hand(bpy.types.Operator):
     bl_idname = "home_builder_doors_windows.flip_door_hand"
-    bl_label = "Flip Door Hand"
-    bl_description = "Flip the door hand (left/right hinge)"
+    bl_label = "Flip Door Side"
+    bl_description = "Switch the hinge between left and right for a single door"
     bl_options = {'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+        _,swing = _shortcut_hinge(context)
+        return bool(swing and not swing.get_input('Is Double'))
 
     def execute(self, context):
-        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
-        if not swing:
+        _,swing = _shortcut_hinge(context)
+        if not swing or swing.get_input('Is Double'):
             return {'CANCELLED'}
         new = not swing.get_input('Is Left')
         swing.set_input('Is Left', new)
-        self.report({'INFO'}, "Door hand flipped")
+        self.report({'INFO'}, "Door side flipped")
         return {'FINISHED'}
 
 
@@ -1630,13 +1657,26 @@ class home_builder_doors_windows_OT_toggle_double_door(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+        return _shortcut_hinge(context)[1] is not None
 
     def execute(self, context):
-        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
+        door,swing = _shortcut_hinge(context)
         if not swing:
             return {'CANCELLED'}
         new = not swing.get_input('Is Double')
+        if visual := hinged_doors.visual_for(door):
+            cage=hb_types.GeoNodeCage(door)
+            width,height=(cage.get_input(k) for k in ('Dim X','Dim Z'))
+            error=hinged_doors.size_error(width,height,new)
+            # Versions 1–4 inverted the minimum-width geometry switch. A
+            # direct shortcut must not silently hide an existing legacy leaf.
+            mod=visual.modifiers.get(visual.home_builder.mod_name)
+            version=mod.node_group.get('fzm_hinged_door_group') if mod and mod.node_group else None
+            if not error and not new and version in (1,2,3,4) and width < .52:
+                error="This older 3D leaf needs a wider opening to display a single door."
+            if error:
+                self.report({'WARNING'}, error)
+                return {'CANCELLED'}
         swing.set_input('Is Double', new)
         self.report({'INFO'}, "Door set to double" if new else "Door set to single")
         return {'FINISHED'}

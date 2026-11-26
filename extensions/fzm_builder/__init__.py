@@ -4,11 +4,11 @@ from . import hb_project
 from . import hb_props_obstacles
 from . import ops
 from .ui import view3d_sidebar
-from .ui import door_pose, menu_apend, wall_edit
+from .ui import door_pose, menu_apend, room_tools, wall_edit
 from .ui import menus
 from .operators import walls
 from .operators import finishes
-from .operators import doors_windows
+from .operators import doors_windows, door_swing
 from .operators import layouts
 from .operators import rooms
 from .operators import details
@@ -53,6 +53,7 @@ def load_file_post(scene):
 
     # Ensure a default frameless style is created
     main_scene.hb_frameless.ensure_default_style()
+    door_swing.upgrade_saved_annotations()
 
 
 class Home_Builder_AddonPreferences(bpy.types.AddonPreferences):
@@ -212,6 +213,7 @@ def register():
     rooms.register()
     details.register()
     doors_windows.register()
+    room_tools.register()
     door_pose.register()
     wall_edit.register()
     export.register()
@@ -236,6 +238,7 @@ def register():
             bpy.app.driver_namespace[name] = obj
 
 def unregister():
+    room_tools.unregister()
     bpy.utils.unregister_class(Home_Builder_AddonPreferences)
 
     hb_props.unregister()

@@ -9,7 +9,10 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 from .. import hb_snap, hb_types
-from ..operators.wall_edit import SceneGraph, EPS
+from ..operators.wall_edit import SceneGraph, EPS, START, END
+from ..operators.wall_edit_snap import (
+    Guide, SquareGuide, SquareHit, PIXELS, candidates, square_candidates, square_markers,
+)
 
 EDIT = 'fzm_builder.edit_wall'
 LABELS = {'START': 'Move Wall Start', 'END': 'Move Wall End', 'MOVE': 'Move Entire Wall'}
@@ -38,9 +41,65 @@ def _on_ground(region, rv3d, xy, level):
     return origin + travel * ray
 
 
+def _guides(model, active, mode, view_layer):
+    sides={'START':(START,), 'END':(END,), 'MOVE':(START,END)}[mode]
+    affected={wall for side in sides for wall,_ in model.graph.members[active,side]}
+    level=model.levels[active]
+    result=[]
+    for wall,segment in model.graph.geometry.items():
+        if (wall in affected or abs(model.levels[wall]-level)>.002
+                or not wall.visible_get(view_layer=view_layer)
+                or wall.get('IS_FAKE_WALL') or wall.get('WALL_TYPE')=='Fake'):
+            continue
+        result.append(Guide(wall.name,segment.start,segment.end))
+        native=model.walls[wall]
+        if native.has_input('Thickness'):
+            thickness=native.get_input('Thickness')
+            if thickness and thickness>EPS:
+                shift=wall.matrix_world.to_3x3() @ Vector((0.,thickness,0.))
+                if abs(shift.z)<=.002 and shift.xy.length>EPS:
+                    a,b=((p[0]+shift.x,p[1]+shift.y) for p in (segment.start,segment.end))
+                    result.append(Guide(wall.name,a,b))
+    return tuple(result)
+
+
+def _square_guides(model,active,mode):
+    graph=model.graph
+    sides={'START':(START,), 'END':(END,), 'MOVE':(START,END)}[mode]
+    moved={member for side in sides for member in graph.members[active,side]}
+    result=[]
+    for side in (START,END):
+        joint=graph.geometry[active][side]
+        opposite=(active,1-side)
+        for wall,end in graph.members[active,side]:
+            if wall==active:
+                continue
+            peer=graph.geometry[wall][end]
+            # Legacy designed joins are normally exact. Refuse to infer a
+            # right angle from a stale graph whose declared joint drifts.
+            if (Vector(joint)-Vector(peer)).length>EPS:
+                continue
+            peer_far=(wall,1-end)
+            move_joint=(active,side) in moved
+            first=graph.geometry[active][1-side]
+            other=graph.geometry[wall][1-end]
+            if move_joint== (opposite in moved) == (peer_far in moved):
+                continue  # Neither outgoing direction could change on this drag.
+            result.append(SquareGuide(wall.name,joint,first,other,move_joint,
+                                      opposite in moved,peer_far in moved))
+    return tuple(result)
+
+
+def _project_targets(operator,point):
+    p=location_3d_to_region_2d(operator.region,operator.rv3d,Vector((*point,operator.level+.0254)))
+    if p is None or not (0 < p.x < operator.region.width and 0 < p.y < operator.region.height):
+        return None
+    return p
+
+
 def _preview(operator):
     context = bpy.context
-    if context.area != operator.area or context.region != operator.region or not operator.plan:
+    if context.area != operator.area or context.region != operator.region:
         return
     vertices = []
     for obj, segment in operator.plan.items():
@@ -49,9 +108,51 @@ def _preview(operator):
     shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
     shader.bind()
     shader.uniform_float('viewportSize', (context.region.width, context.region.height))
-    shader.uniform_float('lineWidth', 4.0)
-    shader.uniform_float('color', (.20, .84, 1., 1.))
-    batch_for_shader(shader, 'LINES', {'pos': vertices}).draw(shader)
+    if operator.axis != 'FREE' and operator.anchor is not None:
+        a = operator.anchor.copy()
+        a.z += .023
+        delta = Vector((1.,0.,0.) if operator.axis == 'X' else (0.,1.,0.))
+        extent = max(1., operator.rv3d.view_distance * 3.0)
+        shader.uniform_float('lineWidth', 1.6)
+        shader.uniform_float('color', (.95,.26,.25,1.) if operator.axis == 'X' else (.32,.82,.32,1.))
+        batch_for_shader(shader,'LINES',{'pos':(a-extent*delta,a+extent*delta)}).draw(shader)
+    if vertices:
+        shader.uniform_float('lineWidth', 4.0)
+        shader.uniform_float('color', (.20, .84, 1., 1.))
+        batch_for_shader(shader, 'LINES', {'pos': vertices}).draw(shader)
+
+    if hit:=operator.snap_hit:
+        color=(1.,.66,.08,1.) if hit.kind=='EDGE' else (.57,1.,.23,1.)
+        z=operator.level+.044
+        x,y=hit.point
+        scale=max(.02,min(.3,operator.rv3d.view_distance*.012))
+        shader.uniform_float('lineWidth',2.5)
+        shader.uniform_float('color',color)
+        pos=[(x-scale,y,z),(x+scale,y,z),(x,y-scale,z),(x,y+scale,z)]
+        if hit.kind=='EDGE':
+            pos.extend(((*hit.guide.start,z),(*hit.guide.end,z)))
+        batch_for_shader(shader,'LINES',{'pos':pos}).draw(shader)
+
+
+    if operator.plan:
+        marks=square_markers(operator.right_angles,operator.offset.xy)
+        if marks:
+            z=operator.level+.053
+            verts=[]
+            for (x,y),u,v,length in marks:
+                scale=min(length*.22,max(.032,min(.22,operator.rv3d.view_distance*.019)))
+                q=(x+scale*u[0],y+scale*u[1],z)
+                r=(x+scale*v[0],y+scale*v[1],z)
+                c=(x+scale*(u[0]+v[0]),y+scale*(u[1]+v[1]),z)
+                verts.extend((q,c,c,r))
+            shader.uniform_float('lineWidth',3.0)
+            shader.uniform_float('color',(.24,1.,.69,1.))
+            batch_for_shader(shader,'LINES',{'pos':verts}).draw(shader)
+
+
+
+def _restrict(offset, axis):
+    return Vector((offset.x if axis!='Y' else 0., offset.y if axis!='X' else 0., 0.))
 
 
 class FZM_OT_edit_wall(bpy.types.Operator):
@@ -60,6 +161,9 @@ class FZM_OT_edit_wall(bpy.types.Operator):
     bl_options = {'UNDO', 'INTERNAL'}
 
     edit_mode: bpy.props.EnumProperty(items=[(k, v, '') for k, v in LABELS.items()], default='MOVE')
+    axis: bpy.props.EnumProperty(
+        items=[('FREE','Free movement','Move on both axes'),('X','X only','Lock to world X'),('Y','Y only','Lock to world Y')],
+        default='FREE',options={'SKIP_SAVE'})
     x: bpy.props.FloatProperty(unit='LENGTH', options={'SKIP_SAVE'})
     y: bpy.props.FloatProperty(unit='LENGTH', options={'SKIP_SAVE'})
     from_handle: bpy.props.BoolProperty(default=False, options={'SKIP_SAVE', 'HIDDEN'})
@@ -70,7 +174,7 @@ class FZM_OT_edit_wall(bpy.types.Operator):
 
     @classmethod
     def description(cls, context, properties):
-        return LABELS[properties.edit_mode] + ': drag in the floor plane; Ctrl snaps to the grid'
+        return LABELS[properties.edit_mode] + ': drag; S toggles wall snap; Q toggles square snap; X/Y locks an axis; Ctrl snaps to the grid'
 
     def _apply(self, context, wall, dx, dy):
         try:
@@ -88,7 +192,8 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         return {'FINISHED'}
 
     def execute(self, context):
-        return self._apply(context, active_wall(context), self.x, self.y)
+        offset = _restrict(Vector((self.x,self.y,0.)), self.axis)
+        return self._apply(context, active_wall(context), offset.x, offset.y)
 
     def invoke(self, context, event):
         self.wall = active_wall(context)
@@ -104,6 +209,15 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         if self.wall not in self.model.walls:
             return {'CANCELLED'}
         self.level = self.model.levels[self.wall]
+        self.snap_enabled=context.scene.home_builder.visual_wall_snap
+        self.square_enabled=context.scene.home_builder.visual_wall_square
+        self.snap_hit=None
+        self.right_angles=_square_guides(self.model,self.wall,self.edit_mode)
+        self.guides=_guides(self.model,self.wall,self.edit_mode,context.view_layer)
+        segment=self.model.graph.geometry[self.wall]
+        middle=tuple((a+b)*.5 for a,b in zip(segment.start,segment.end))
+        self.anchors={'START':(('start',segment.start),), 'END':(('end',segment.end),),
+                      'MOVE':(('center',middle),('start',segment.start),('end',segment.end))}[self.edit_mode]
         self.first = _pixels(event, self.region)
         self.anchor = (_on_ground(self.region, self.rv3d, self.first, self.level)
                        if self.from_handle else None)
@@ -118,7 +232,10 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _hint(self, text):
-        self.area.header_text_set(f'{LABELS[self.edit_mode]}: {text}  |  Ctrl: grid  Esc: cancel')
+        lock = '' if self.axis == 'FREE' else f'  [{self.axis} only]'
+        snap='on' if self.snap_enabled else 'off'
+        square='on' if self.square_enabled else 'off'
+        self.area.header_text_set(f'{LABELS[self.edit_mode]}{lock}: {text}  |  S: wall snap {snap}  Q: 90° {square}  X/Y: lock  Ctrl: grid  Esc: cancel')
         self.area.tag_redraw()
 
     def _cleanup(self):
@@ -132,13 +249,42 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         self._cleanup()
 
     def _update(self, context, event):
+        self.snap_hit=None
         point = _on_ground(self.region, self.rv3d, _pixels(event, self.region), self.level)
         if point is None:
             self.plan, self.error = {}, 'Use a top or angled view to move in the floor plane.'
+            self._hint(self.error)
             return
         self.offset = point - self.anchor
         if event.ctrl:
             self.offset = hb_snap.snap_vector_to_grid(self.offset, context.scene.unit_settings, event.shift)
+        self.offset = _restrict(self.offset, self.axis)
+        # Ctrl retains the existing grid behavior and takes full precedence.
+        # Try another target if the best would collapse a connected wall or
+        # cut across an opening; do not make an invalid snap look accepted.
+        if not event.ctrl and (self.snap_enabled or self.square_enabled):
+            pixels=PIXELS*max(1.,context.preferences.system.ui_scale)
+            project=lambda p:_project_targets(self,p)
+            found=[]
+            if self.snap_enabled and self.guides:
+                found.extend(candidates(self.anchors,self.offset.xy,self.guides,self.axis,project,pixels))
+            if self.square_enabled and self.right_angles:
+                found.extend(square_candidates(self.right_angles,self.anchors[0][1],
+                                               self.offset.xy,self.axis,project,pixels))
+            found.sort(key=lambda hit:hit.pixels-(5. if isinstance(hit,SquareHit) else 4. if hit.kind=='CORNER' else 0.))
+            for hit in found:
+                try:
+                    self.plan=self.model.checked_plan(self.wall,self.edit_mode,*hit.offset)
+                except ValueError:
+                    continue
+                self.offset=Vector((*hit.offset,0.))
+                self.error=None
+                if isinstance(hit,SquareHit):
+                    self._hint(f'90° to {hit.guide.name}')
+                else:
+                    self.snap_hit=hit
+                    self._hint(f'Snapped {hit.reference} to {hit.guide.name} {hit.kind.lower()}')
+                return
         try:
             self.plan = self.model.checked_plan(self.wall, self.edit_mode, self.offset.x, self.offset.y)
             self.error = None
@@ -155,6 +301,23 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             return {'CANCELLED'}
         if hb_snap.event_is_pass_through(event):
             return {'PASS_THROUGH'}
+        if event.type in {'S','Q'} and event.value=='PRESS':
+            if event.type=='S':
+                self.snap_enabled=not self.snap_enabled
+            else:
+                self.square_enabled=not self.square_enabled
+            if self.anchor is not None:
+                self._update(context,event)
+            else:
+                self._hint('Click a reference point, then a destination')
+            return {'RUNNING_MODAL'}
+        if event.type in {'X','Y'} and event.value=='PRESS':
+            self.axis='FREE' if self.axis==event.type else event.type
+            if self.anchor is not None:
+                self._update(context,event)
+            else:
+                self._hint('Click a reference point, then a destination')
+            return {'RUNNING_MODAL'}
         xy = _pixels(event, self.region)
         inside = 0 <= xy.x < self.region.width and 0 <= xy.y < self.region.height
         if self.anchor is None and inside and event.type == 'LEFTMOUSE' and event.value == 'PRESS':

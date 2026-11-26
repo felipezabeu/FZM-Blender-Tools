@@ -7,8 +7,16 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 | Extensão | Versão | Função |
 |---|---:|---|
 | FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
-| FZM Builder | 5.1.12 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.14 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.14
+
+- **Update Floor Outline** recorta o piso original ao encontrar um perímetro interno fechado e cria um piso separado para cada ambiente. Acabamento, paginação e **Paint Room Walls** funcionam por piso. Rodapés existentes são recalculados com os cortes de portas e molduras.
+- No vão, os pisos encontram-se no centro da folha fechada ou, em um **Open**, no meio da parede. O arco 2D de portas de abrir segue a folha de verdade, fica acima do piso e mantém as anotações na vista de planta.
+- O arraste de paredes encaixa em cantos, arestas e no esquadro dos vizinhos conectados. No arraste, **S** alterna o snap em paredes, **Q** alterna o esquadro, **X/Y** trava no eixo e **Ctrl** encaixa na grade. O snap não cria conexões novas sozinho.
+- A barra **T** da vista 3D, em modo Objeto, tem atalhos para parede interna, porta de abrir e janela 3D. Selecione a ferramenta e depois clique na vista; os demais controles continuam no painel **N**.
+- Inclui os estilos de porta da versão de teste 5.1.13 e usa **FZM Builder** também no menu superior.
 
 ### Alterações da vanity 1.2
 - Cinza atualizado para `#777B80`, um pouco mais claro do que a proposta anterior `#62666B`.

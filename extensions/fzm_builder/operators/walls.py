@@ -10,6 +10,7 @@ from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from .. import hb_types, hb_snap, hb_placement, units
 from .floor_divider import FZM_OT_floor_divider
+from .floor_outline import FZM_OT_update_floor_outline, remember_created_floor
 from .floor_finish import FZM_OT_floor_finish
 from .floor_tiles import FZM_OT_floor_tile_layout
 from .shower_area import FZM_OT_shower_area
@@ -771,6 +772,11 @@ class home_builder_walls_OT_draw_walls(bpy.types.Operator, hb_placement.Placemen
     bl_description = "Enter Draw Walls Mode. Click to place points, type for exact length, Escape to cancel"
     bl_options = {'UNDO'}
 
+    force_interior: bpy.props.BoolProperty(
+        description="Use Interior wall dimensions without changing the scene's selected wall type",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     # Wall-specific state
     current_wall = None
     previous_wall = None
@@ -1282,7 +1288,7 @@ class home_builder_walls_OT_draw_walls(bpy.types.Operator, hb_placement.Placemen
     def create_wall(self, context):
         """Create a new wall segment based on wall_type setting."""
         props = context.scene.home_builder
-        wall_type = props.wall_type
+        wall_type = "Interior" if self.force_interior else props.wall_type
 
         # Determine height based on wall type
         if wall_type in {'Exterior', 'Interior'}:
@@ -2147,6 +2153,7 @@ class home_builder_walls_OT_add_floor(bpy.types.Operator):
                 name = "Floor" if floors_created == 0 else f"Floor.{floors_created:03d}"
                 floor_obj = self.create_floor_mesh(name, points)
                 floor_obj['IS_FLOOR_BP'] = True
+                remember_created_floor(floor_obj, chain)
                 floors_created += 1
         else:
             # No closed loops — create bounding box floors from open chains
@@ -2182,6 +2189,7 @@ class home_builder_walls_OT_add_floor(bpy.types.Operator):
                 name = "Floor" if floors_created == 0 else f"Floor.{floors_created:03d}"
                 floor_obj = self.create_floor_mesh(name, points)
                 floor_obj['IS_FLOOR_BP'] = True
+                remember_created_floor(floor_obj, chain, bounds=True)
                 floors_created += 1
         
         if floors_created > 0:
@@ -4010,6 +4018,7 @@ classes = (
     home_builder_walls_OT_wall_prompts,
     home_builder_walls_OT_add_floor,
     FZM_OT_floor_divider,
+    FZM_OT_update_floor_outline,
     FZM_OT_floor_finish,
     FZM_OT_floor_tile_layout,
     FZM_OT_shower_area,

@@ -9,6 +9,7 @@ import bpy
 
 from .. import hb_types
 from ..units import inch
+from . import shaker_door_profiles as shaker, six_panel_doors
 
 
 TYPE_KEY = "FZM_NATIVE_DOOR_TYPE"
@@ -27,7 +28,7 @@ STYLES = (
     (STYLE_SHAKER, "Shaker 1 Panel", "White framed leaf with one recessed panel", 1),
     (STYLE_SHAKER_2, "Shaker 2 Panel", "White framed leaf with two stacked recessed panels", 4),
     (STYLE_SHAKER_5, "Shaker 5 Panel", "White framed leaf with five stacked recessed panels", 5),
-    (STYLE_SIX_PANEL, "White Six Panel", "Two columns of three inset panels", 2),
+    (STYLE_SIX_PANEL, "White Six Panel", "Two columns of three molded panels; one column per bifold half", 2),
 )
 BYPASS_STYLES = (*STYLES, (STYLE_MIRROR, "Mirrored", "Mirror front with a slim aluminum frame", 3))
 # These are stored as per-modifier float values, not enum order.
@@ -35,7 +36,8 @@ BYPASS_STYLES = (*STYLES, (STYLE_MIRROR, "Mirrored", "Mirror front with a slim a
 STYLE_VALUES = {STYLE_FLAT: 0, STYLE_SHAKER: 1, STYLE_MIRROR: 2, STYLE_SIX_PANEL: 3,
                 STYLE_SHAKER_2: 4, STYLE_SHAKER_5: 5}
 NEW_PANEL_STYLES = {STYLE_SHAKER_2, STYLE_SHAKER_5}
-GEOMETRY_VERSION = 2
+GEOMETRY_VERSION = 4
+BIFOLD_SHAKER_STYLES = {STYLE_SHAKER, STYLE_SHAKER_2}
 DOOR_TYPES = (
     ('BYPASS', "Sliding Closet (Bypass)", "Two leaves on parallel tracks"),
     ('BIFOLD', "Bifold", "Two hinged leaves fold as a pair"),
@@ -173,7 +175,8 @@ class Assembly:
         return node.outputs[0]
 
     def leaf(self, width, height, *, thickness, mirrored_capable=False,
-             pull=None, pull_side=-1):
+             pull=None, pull_side=-1, six_variant=None, shaker_variant=None,
+             shaker_insert_material=None, shaker_insert_thickness=None):
         """Build the leaf centered on its local X/Y/Z for rotation."""
         flat = self.box((width, thickness, height), (0, 0, 0), 'white')
         rail = self.calc('MINIMUM', self.mul(width, .22), .064)
@@ -209,38 +212,52 @@ class Assembly:
                     top = self.sub(top, rail_h)
             return self.join(*parts)
 
+        def carved(profile, insert=None, section=None):
+            if insert is None:
+                insert = material('inset')
+            return shaker.build_leaf(self, width, height, thickness, profile, flat, insert,
+                                     insert_thickness=section)
+
+        if shaker_variant == 'BIFOLD':
+            frame = carved(shaker.BIFOLD_ONE)
+        elif shaker_variant == 'HINGED':
+            frame = carved(shaker.HINGED_ONE)
+
         style = self.inputs.outputs[STYLE]
         leaf = self.select(self.calc('GREATER_THAN', style, .5), flat, frame)
-        # Smaller widths retain two genuinely separate columns; mullion width
-        # scales down while the door thickness stays constant.
-        mullion = self.calc('MINIMUM', .044, self.mul(center_width, .19))
-        panel_w = self.mul(self.sub(center_width, mullion), .5)
-        panel_x = self.mul(self.add(panel_w, mullion), .5)
-        rail_h = .043
-        open_h = self.sub(center_height, 2 * rail_h)
-        short_h, mid_h, lower_h = (self.mul(open_h, n) for n in (.20, .40, .40))
-        top = self.mul(center_height, .5)
-        first_rail = self.sub(self.sub(top, short_h), rail_h * .5)
-        second_rail = self.sub(self.sub(first_rail, mid_h), rail_h)
-        six_parts = [
-            self.box((rail, thickness, height), (self.mul(x, -1), 0, 0), 'white'),
-            self.box((rail, thickness, height), (x, 0, 0), 'white'),
-            self.box((center_width, thickness, rail), (0, 0, z), 'white'),
-            self.box((center_width, thickness, rail), (0, 0, self.mul(z, -1)), 'white'),
-            self.box((mullion, thickness, center_height), (0, 0, 0), 'white'),
-        ]
-        panel_rows = (
-            (short_h, self.sub(top, self.mul(short_h, .5))),
-            (mid_h, self.sub(first_rail, self.add(rail_h * .5, self.mul(mid_h, .5)))),
-            (lower_h, self.sub(second_rail, self.add(rail_h * .5, self.mul(lower_h, .5)))),
-        )
-        for rail_z in (first_rail, second_rail):
-            for col in (-1, 1):
-                six_parts.append(self.box((panel_w, thickness, rail_h), (self.mul(panel_x, col), 0, rail_z), 'white'))
-        for row_h, row_z in panel_rows:
-            for col in (-1, 1):
-                six_parts.append(self.box((panel_w, thickness * .58, row_h), (self.mul(panel_x, col), 0, row_z), 'inset'))
-        six_panel = self.join(*six_parts)
+        if six_variant:
+            six_panel = six_panel_doors.build_leaf(self,width,height,thickness,six_variant,material('inset'))
+        else:
+            # Smaller widths retain two genuinely separate columns; mullion width
+            # scales down while the door thickness stays constant.
+            mullion = self.calc('MINIMUM', .044, self.mul(center_width, .19))
+            panel_w = self.mul(self.sub(center_width, mullion), .5)
+            panel_x = self.mul(self.add(panel_w, mullion), .5)
+            rail_h = .043
+            open_h = self.sub(center_height, 2 * rail_h)
+            short_h, mid_h, lower_h = (self.mul(open_h, n) for n in (.20, .40, .40))
+            top = self.mul(center_height, .5)
+            first_rail = self.sub(self.sub(top, short_h), rail_h * .5)
+            second_rail = self.sub(self.sub(first_rail, mid_h), rail_h)
+            six_parts = [
+                self.box((rail, thickness, height), (self.mul(x, -1), 0, 0), 'white'),
+                self.box((rail, thickness, height), (x, 0, 0), 'white'),
+                self.box((center_width, thickness, rail), (0, 0, z), 'white'),
+                self.box((center_width, thickness, rail), (0, 0, self.mul(z, -1)), 'white'),
+                self.box((mullion, thickness, center_height), (0, 0, 0), 'white'),
+            ]
+            panel_rows = (
+                (short_h, self.sub(top, self.mul(short_h, .5))),
+                (mid_h, self.sub(first_rail, self.add(rail_h * .5, self.mul(mid_h, .5)))),
+                (lower_h, self.sub(second_rail, self.add(rail_h * .5, self.mul(lower_h, .5)))),
+            )
+            for rail_z in (first_rail, second_rail):
+                for col in (-1, 1):
+                    six_parts.append(self.box((panel_w, thickness, rail_h), (self.mul(panel_x, col), 0, rail_z), 'white'))
+            for row_h, row_z in panel_rows:
+                for col in (-1, 1):
+                    six_parts.append(self.box((panel_w, thickness * .58, row_h), (self.mul(panel_x, col), 0, row_z), 'inset'))
+            six_panel = self.join(*six_parts)
         if mirrored_capable:
             m_rail = .022
             m_x = self.mul(self.sub(width, m_rail), .5)
@@ -256,29 +273,39 @@ class Assembly:
             )
             leaf = self.select(self.calc('GREATER_THAN', style, 1.5), leaf, mirror)
         leaf = self.select(self.calc('GREATER_THAN', style, 2.5), leaf, six_panel)
-        leaf = self.select(self.calc('GREATER_THAN', style, 3.5), leaf, stacked_shaker((.58, .42)))
-        leaf = self.select(self.calc('GREATER_THAN', style, 4.5), leaf, stacked_shaker((.20,) * 5))
-        if pull:
-            px = self.mul(self.sub(width, .11), .5 * pull_side)
-            pull_depth = .006 if pull == 'flush' else .02
-            pull_h = .10 if pull == 'flush' else .065
-            # Keep pulls below center for normal door heights without crossing
-            # the bottom of shortened visual models.
-            pull_z = self.mul(height, -.06)
-            leaf = self.join(leaf, self.box((.024, pull_depth, pull_h),
-                (px, thickness / 2 + pull_depth / 2, pull_z), 'hardware'))
-        return leaf
+        if shaker_variant == 'BIFOLD':
+            two = carved(shaker.BIFOLD_TWO)
+        elif shaker_variant == 'HINGED':
+            two = carved(shaker.HINGED_TWO)
+        else:
+            two = stacked_shaker((.58, .42))
+        five = (carved(shaker.HINGED_FIVE, shaker_insert_material, shaker_insert_thickness)
+                if shaker_variant == 'HINGED' else stacked_shaker((.20,) * 5))
+        leaf = self.select(self.calc('GREATER_THAN', style, 3.5), leaf, two)
+        leaf = self.select(self.calc('GREATER_THAN', style, 4.5), leaf, five)
+        return self.add_pull(leaf, width, height, thickness, pull, pull_side) if pull else leaf
+
+    def add_pull(self, leaf, width, height, thickness, pull, side):
+        px = self.mul(self.sub(width, .11), .5 * side)
+        pull_depth = .006 if pull == 'flush' else .02
+        pull_h = .10 if pull == 'flush' else .065
+        # Keep pulls below center without crossing the bottom of short leaves.
+        pull_z = self.mul(height, -.06)
+        return self.join(leaf, self.box((.024, pull_depth, pull_h),
+            (px, thickness / 2 + pull_depth / 2, pull_z), 'hardware'))
 
 
-def build_group(kind):
-    group_name = f"FZM Native Door v{GEOMETRY_VERSION} | " + kind
+def build_group(kind, version=None):
+    if version is None:
+        version = GEOMETRY_VERSION if kind == 'BIFOLD' else 3
+    group_name = f"FZM Native Door v{version} | " + kind
     group = bpy.data.node_groups.get(group_name)
     if (group is not None and group.get('fzm_native_door_group') == kind
-            and group.get('fzm_native_door_geometry_version') == GEOMETRY_VERSION):
+            and group.get('fzm_native_door_geometry_version') == version):
         return group
     group = bpy.data.node_groups.new(group_name, "GeometryNodeTree")
     group["fzm_native_door_group"] = kind
-    group["fzm_native_door_geometry_version"] = GEOMETRY_VERSION
+    group["fzm_native_door_geometry_version"] = version
     group.interface.new_socket(name='Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
     group.interface.new_socket(name='Geometry', in_out='INPUT', socket_type='NodeSocketGeometry').hide_in_modifier = True
     defaults = {
@@ -315,9 +342,9 @@ def build_group(kind):
         # Two rails remain parallel, even when the fronts overlap completely.
         rear, front = a.sub(center_d, .028), a.add(center_d, .028)
         rear_leaf = a.leaf(leaf_w, leaf_height, thickness=.024, mirrored_capable=True,
-                           pull='flush', pull_side=-1)
+                           pull='flush', pull_side=-1,six_variant='FULL' if version>=3 else None)
         front_leaf = a.leaf(leaf_w, leaf_height, thickness=.024, mirrored_capable=True,
-                            pull='flush', pull_side=1)
+                            pull='flush', pull_side=1,six_variant='FULL' if version>=3 else None)
         g = a.join(
             a.transform(rear_leaf, (left, rear, center_z)),
             a.transform(front_leaf, (a.sub(right, a.mul(travel, open_amt)), front, center_z)),
@@ -337,8 +364,11 @@ def build_group(kind):
         hinge_x = a.add(pivot, a.add(px, .004))
         hinge_y = a.add(center_d, py)
         half_px, half_py = a.mul(px, .5), a.mul(py, .5)
-        leaf_a = a.leaf(leaf_w, leaf_height, thickness=.031)
-        leaf_b = a.leaf(leaf_w, leaf_height, thickness=.031, pull='normal', pull_side=-1)
+        variant = 'BIFOLD' if version >= 4 else None
+        leaf_a = a.leaf(leaf_w, leaf_height, thickness=.031, shaker_variant=variant,
+                       six_variant='HALF_LEFT' if version >= 3 else None)
+        leaf_b = a.leaf(leaf_w, leaf_height, thickness=.031, pull='normal', pull_side=-1,
+                        shaker_variant=variant, six_variant='HALF_RIGHT' if version >= 3 else None)
         g = a.join(
             a.transform(leaf_a, (a.add(pivot, half_px), a.add(center_d, half_py), center_z), angle),
             a.transform(leaf_b, (a.add(hinge_x, half_px), a.sub(hinge_y, half_py), center_z), a.mul(angle, -1)),
@@ -350,7 +380,7 @@ def build_group(kind):
         leaf_w = a.sub(w, .018)
         travel = a.sub(leaf_w, .065)
         x = a.sub(center_w, a.mul(travel, open_amt))
-        leaf = a.leaf(leaf_w, leaf_height, thickness=.035, pull='flush', pull_side=1)
+        leaf = a.leaf(leaf_w, leaf_height, thickness=.035, pull='flush', pull_side=1,six_variant='FULL' if version>=3 else None)
         g = a.join(
             a.transform(leaf, (x, center_d, center_z)),
             a.box((a.sub(a.mul(w, 2), .018), .030, .030), (.009, center_d, track_z), 'metal'),
@@ -391,19 +421,20 @@ def get_options(obj):
 
 
 def set_options(obj, style, opening, right):
-    # Keep saved v1 groups untouched when using the established options.
-    # Upgrade only the door the user edited, and only for a new panel style.
-    if style in NEW_PANEL_STYLES:
-        mod = obj.modifiers[obj.home_builder.mod_name]
-        old = mod.node_group
-        if old.get('fzm_native_door_geometry_version', 1) < GEOMETRY_VERSION:
-            new = build_group(obj.parent[TYPE_KEY])
-            # Socket names AND identifiers remain the same in v2, so existing
-            # FCurves continue to read the cage without being rewritten.
-            for name in ('Width', 'Depth', 'Height', STYLE, OPEN, RIGHT):
-                if old.interface.items_tree[name].identifier != new.interface.items_tree[name].identifier:
-                    raise ValueError("Cannot update this door's size driver sockets.")
-            mod.node_group = new
+    # Old saved node groups stay attached until that door is deliberately edited.
+    # Viewport pose toggles never rebuild appearance.
+    kind = obj.parent[TYPE_KEY]
+    minimum = (4 if kind == 'BIFOLD' and style in BIFOLD_SHAKER_STYLES else
+               3 if style == STYLE_SIX_PANEL else 2 if style in NEW_PANEL_STYLES else 1)
+    mod = obj.modifiers[obj.home_builder.mod_name]
+    old = mod.node_group
+    if old.get('fzm_native_door_geometry_version', 1) < minimum:
+        new = build_group(kind, minimum)
+        for name in ('Width', 'Depth', 'Height', STYLE, OPEN, RIGHT):
+            socket = old.interface.items_tree.get(name)
+            if not socket or socket.identifier != new.interface.items_tree[name].identifier:
+                raise ValueError("Cannot update this door's size driver sockets.")
+        mod.node_group = new
     # Modifier sockets, not group defaults: two doors can share the group and
     # still have independently edited styles and poses.
     visual = hb_types.GeoNodeObject(obj)

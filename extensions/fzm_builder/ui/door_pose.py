@@ -93,7 +93,7 @@ class FZM_OT_toggle_door_pose(bpy.types.Operator):
 
 
 def _anchor(context, cage):
-    """Project the upper center of the fixed aperture instead of the moving leaf."""
+    """Project the center of the fixed aperture instead of the moving leaf."""
     region, rv3d = context.region, context.region_data
     if not region or region.type != 'WINDOW' or not rv3d:
         return None
@@ -108,7 +108,7 @@ def _anchor(context, cage):
         return None
     # The control remains accessible with the leaf open, including a fully
     # slid pocket leaf that is hidden behind the wall.
-    center = cage.matrix_world @ Vector((w*.5,d*.5,h*.79))
+    center = cage.matrix_world @ Vector((w*.5,d*.5,h*.5))
     clip = rv3d.perspective_matrix @ Vector((*center, 1.))
     if clip.w <= EPS or not (-clip.w <= clip.z <= clip.w):
         return None
@@ -126,9 +126,9 @@ def _anchor(context, cage):
             else:
                 hi_x = min(hi_x,other.x-region.x-24*size)
     # Don't orphan the control at an unrelated corner of a narrow/split view.
-    if not (lo_x <= p.x <= hi_x) or hi_y < lo_y or p.y < lo_y-30:
+    if not (lo_x <= p.x <= hi_x and lo_y <= p.y <= hi_y):
         return None
-    return p.x, min(hi_y,max(lo_y,p.y+29*size))
+    return p.x, p.y
 
 
 class FZM_GGT_door_pose(bpy.types.GizmoGroup):

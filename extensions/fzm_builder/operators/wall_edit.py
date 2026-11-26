@@ -146,6 +146,10 @@ class SceneGraph:
     def commit(self, context, plan):
         if not plan:
             return
+        from .floor_outline import legacy_before_wall_edit, save_legacy_bindings
+        # Record an exact older room perimeter before it moves. This never
+        # regenerates floor geometry, which remains an explicit separate command.
+        bindings = legacy_before_wall_edit(context, plan)
         angles = {}
         for key in [(wall, side) for wall in plan for side in (START, END)]:
             nodes = self.graph.members[key]
@@ -191,3 +195,4 @@ class SceneGraph:
                 self.walls[obj].set_input(socket, value)
             context.view_layer.update()
             raise
+        save_legacy_bindings(bindings)

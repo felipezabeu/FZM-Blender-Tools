@@ -15,8 +15,8 @@ EPS = 1e-5
 SNAP_METRES = .08
 
 
-def top_outline(mesh):
-    """Extract the one outer ring from the unmodified floor slab."""
+def top_rings(mesh):
+    """Extract the closed boundary rings of the unmodified floor slab."""
     if not mesh.vertices or not mesh.polygons:
         raise ValueError("The floor has no geometry.")
     top = max(v.co.z for v in mesh.vertices)
@@ -38,18 +38,30 @@ def top_outline(mesh):
             adj[b].append(a)
     if not adj or any(len(neighbors) != 2 for neighbors in adj.values()):
         raise ValueError("The floor perimeter is not a simple closed boundary.")
-    first = min(adj)
-    ring = [first]
-    prev, cur = first, adj[first][0]
-    visited = {first}
-    while cur != first and cur not in visited:
-        ring.append(cur)
-        visited.add(cur)
-        nxt = next(i for i in adj[cur] if i != prev)
-        prev, cur = cur, nxt
-    if cur != first or len(ring) != len(adj):
+    rings = []
+    unseen = set(adj)
+    while unseen:
+        first = min(unseen)
+        ring = [first]
+        prev, cur = first, adj[first][0]
+        unseen.remove(first)
+        while cur != first and cur in unseen:
+            ring.append(cur)
+            unseen.remove(cur)
+            nxt = next(i for i in adj[cur] if i != prev)
+            prev, cur = cur, nxt
+        if cur != first or len(ring) < 3:
+            raise ValueError("The floor perimeter is not a simple closed boundary.")
+        rings.append([mesh.vertices[i].co.to_2d() for i in ring])
+    rings.sort(key=lambda ring: abs(area([p-ring[0] for p in ring])), reverse=True)
+    return rings, top, base, top_faces[0].material_index
+
+
+def top_outline(mesh):
+    rings, top, base, index = top_rings(mesh)
+    if len(rings) != 1:
         raise ValueError("This tool requires one floor outline without built-in holes. Floor Cutter modifiers are supported.")
-    return [mesh.vertices[i].co.to_2d() for i in ring], top, base, top_faces[0].material_index
+    return rings[0], top, base, index
 
 
 def cross(a, b):
@@ -154,6 +166,9 @@ def make_slab(name, poly, top, base, source, material_index):
 
 
 def divide_floor(floor, first, second):
+    from .floor_regions import ROOT, HOLES
+    if floor.get(ROOT) or HOLES in floor:
+        raise ValueError("This floor tracks enclosed rooms. Change the room walls and use Update Floor Outline.")
     if not floor.users_collection:
         raise ValueError("The floor needs to belong to a collection.")
     if floor.data.shape_keys or floor.vertex_groups or any(m.type != 'BOOLEAN' for m in floor.modifiers):
@@ -187,6 +202,8 @@ def divide_floor(floor, first, second):
         raise
     if old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
+    from .floor_outline import mark_divided
+    mark_divided(floor, new_floor)
     return new_floor
 
 

@@ -57,8 +57,8 @@ class Run:
     right: float
 
 
-def floor_outline(floor):
-    """Return the world-space CCW boundary of the original top surface.
+def floor_boundaries(floor):
+    """Return directed floor rings with the floor interior always on the left.
 
     The floor divider changes this source contour; material changes and interior
     Floor Cutter modifiers do not create perimeter edges.
@@ -76,7 +76,7 @@ def floor_outline(floor):
             adjacency[b].append(a)
     if len(adjacency) < 3 or any(len(incident) != 2 for incident in adjacency.values()):
         raise ValueError('The selected floor needs a closed, flat top outline')
-    # Use the largest ring as the outer perimeter, not any editable interior hole.
+    # Extract boundary rings separately so corners never join across holes.
     unseen = set(adjacency)
     rings = []
     matrix = floor.matrix_world
@@ -96,19 +96,30 @@ def floor_outline(floor):
         xy = [p.to_2d() - origin for p in coords]
         area = sum(a.cross(b) for a, b in zip(xy, xy[1:] + xy[:1]))
         rings.append((area, coords))
-    area, coords = max(rings, key=lambda item: abs(item[0]))
-    level = sum(p.z for p in coords) / len(coords)
-    if abs(area) < EPS ** 2 or any(abs(p.z - level) > EPS for p in coords):
-        raise ValueError('The selected floor needs a level, non-collapsed top outline')
-    outline = [p.to_2d() for p in (coords if area > 0 else reversed(coords))]
-    edges = []
-    for a, b in zip(outline, outline[1:] + outline[:1]):
-        delta = b - a
-        if delta.length < EPS:
-            raise ValueError('The selected floor outline contains a collapsed edge')
-        direction = delta.normalized()
-        edges.append(Edge(a, direction, Vector((-direction.y, direction.x)), delta.length))
-    return edges, level
+    rings.sort(key=lambda item: abs(item[0]),reverse=True)
+    level = sum(p.z for p in rings[0][1]) / len(rings[0][1])
+    from .floor_regions import HOLES
+    # Older floors may have manually modeled openings; don't add trim/paint to
+    # those. Only native wall-backed room holes participate in the perimeter.
+    boundaries = []
+    for i,(area,coords) in enumerate(rings if HOLES in floor else rings[:1]):
+        if abs(area) < EPS ** 2 or any(abs(p.z - level) > EPS for p in coords):
+            raise ValueError('The selected floor needs a level, non-collapsed top outline')
+        outline = [p.to_2d() for p in (coords if (area > 0) == (i == 0) else reversed(coords))]
+        edges = []
+        for a,b in zip(outline,outline[1:] + outline[:1]):
+            delta = b-a
+            if delta.length < EPS:
+                raise ValueError('The selected floor outline contains a collapsed edge')
+            direction = delta.normalized()
+            edges.append(Edge(a,direction,Vector((-direction.y,direction.x)),delta.length))
+        boundaries.append(edges)
+    return boundaries,level
+
+
+def floor_outline(floor):
+    rings,level = floor_boundaries(floor)
+    return rings[0],level
 
 
 def physical_walls(context, level):
@@ -224,43 +235,44 @@ def end_point(run, left, projection, adjacent_edge, adjacent_run):
 def board_sections(context, floor, profile, height, thickness, wall_spans, matched_walls):
     """Yield (matched wall, independent start/end loft rings in floor space)."""
     context.view_layer.update()
-    edges, level = floor_outline(floor)
+    rings, level = floor_boundaries(floor)
     walls = list(physical_walls(context, level))
-    perimeter = [edge_runs(edge, walls) for edge in edges]
-    matched_walls.update(run.face.wall.obj for runs in perimeter for run in runs)
     try:
         inverse = floor.matrix_world.inverted()
     except ValueError as error:
         raise ValueError('The floor transform cannot be inverted') from error
 
-    for i, runs in enumerate(perimeter):
-        previous, following = perimeter[i - 1], perimeter[(i + 1) % len(edges)]
-        previous_edge, following_edge = edges[i - 1], edges[(i + 1) % len(edges)]
-        previous_wall = previous[-1] if previous and previous_edge.length - previous[-1].right <= MATCH else None
-        following_wall = following[0] if following and following[0].left <= MATCH else None
-        for k, run in enumerate(runs):
-            # Only corner-adjacent wall segments may miter or use the divider cap.
-            ends = ((previous_edge, previous_wall) if k == 0 else (run.edge, None),
-                    (following_edge, following_wall) if k == len(runs) - 1 else (run.edge, None))
-            origin = end_point(run, True, 0, *ends[0])
-            end = end_point(run, False, 0, *ends[1])
-            direction = run.face.direction
-            length = (end - origin).dot(direction)
-            if length < EPS:
-                continue
-            for left, right in wall_spans(run.face.wall.obj, origin, end, run.face.inward, level, height):
-                if right - left < EPS:
+    for edges in rings:
+        perimeter = [edge_runs(edge, walls) for edge in edges]
+        matched_walls.update(run.face.wall.obj for runs in perimeter for run in runs)
+        for i, runs in enumerate(perimeter):
+            previous, following = perimeter[i - 1], perimeter[(i + 1) % len(edges)]
+            previous_edge, following_edge = edges[i - 1], edges[(i + 1) % len(edges)]
+            previous_wall = previous[-1] if previous and previous_edge.length - previous[-1].right <= MATCH else None
+            following_wall = following[0] if following and following[0].left <= MATCH else None
+            for k, run in enumerate(runs):
+                # Only corner-adjacent wall segments may miter or use the divider cap.
+                ends = ((previous_edge, previous_wall) if k == 0 else (run.edge, None),
+                        (following_edge, following_wall) if k == len(runs) - 1 else (run.edge, None))
+                origin = end_point(run, True, 0, *ends[0])
+                end = end_point(run, False, 0, *ends[1])
+                direction = run.face.direction
+                length = (end - origin).dot(direction)
+                if length < EPS:
                     continue
-                rings = [[], []]
-                for up, out in profile:
-                    distance = thickness * out
-                    a = (end_point(run, True, distance, *ends[0]) if left <= 1e-6
-                         else origin + left * direction + distance * run.face.inward)
-                    b = (end_point(run, False, distance, *ends[1]) if right >= length - 1e-6
-                         else origin + right * direction + distance * run.face.inward)
-                    if (b - a).dot(direction) < EPS:
-                        break
-                    for ring, point in zip(rings, (a, b)):
-                        ring.append(inverse @ Vector((*point, level + up * height)))
-                if len(rings[0]) == len(profile):
-                    yield run.face.wall.obj, rings
+                for left, right in wall_spans(run.face.wall.obj, origin, end, run.face.inward, level, height):
+                    if right - left < EPS:
+                        continue
+                    rings = [[], []]
+                    for up, out in profile:
+                        distance = thickness * out
+                        a = (end_point(run, True, distance, *ends[0]) if left <= 1e-6
+                             else origin + left * direction + distance * run.face.inward)
+                        b = (end_point(run, False, distance, *ends[1]) if right >= length - 1e-6
+                             else origin + right * direction + distance * run.face.inward)
+                        if (b - a).dot(direction) < EPS:
+                            break
+                        for ring, point in zip(rings, (a, b)):
+                            ring.append(inverse @ Vector((*point, level + up * height)))
+                    if len(rings[0]) == len(profile):
+                        yield run.face.wall.obj, rings
