@@ -9,12 +9,33 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 from .. import hb_snap, hb_types
+from ..hb_placement import NUMBER_KEYS
 from ..operators.wall_edit import SceneGraph, EPS, START, END
+from ..operators.wall_move_input import MAX_INPUT, distance_to_world, offset_for_distance, unit_label
 from ..operators.wall_edit_snap import (
     Guide, SquareGuide, SquareHit, PIXELS, candidates, square_candidates, square_markers,
 )
 
 EDIT = 'fzm_builder.edit_wall'
+CONFIRM = {'RET', 'NUMPAD_ENTER'}
+_NUMBER_EVENT = {**NUMBER_KEYS, 'COMMA':',', 'EQUAL':'+'}
+
+
+def _distance_character(event):
+    if event.ctrl or event.alt or getattr(event, 'oskey', False):
+        return ''
+    value = event.unicode.lower()
+    if len(value)==1 and value in '0123456789.,+-/ \'"′″‘’“”abcdefghijklmnopqrstuvwxyz':
+        return value
+    if event.type == 'QUOTE':
+        return '"' if event.shift else "'"
+    if event.type == 'SPACE':
+        return ' '
+    if event.type == 'EQUAL' and not event.shift:
+        return ''
+    return _NUMBER_EVENT.get(event.type,'')
+
+
 LABELS = {'START': 'Move Wall Start', 'END': 'Move Wall End', 'MOVE': 'Move Entire Wall'}
 
 
@@ -174,7 +195,8 @@ class FZM_OT_edit_wall(bpy.types.Operator):
 
     @classmethod
     def description(cls, context, properties):
-        return LABELS[properties.edit_mode] + ': drag; S toggles wall snap; Q toggles square snap; X/Y locks an axis; Ctrl snaps to the grid'
+        return (LABELS[properties.edit_mode] + ': drag, or aim and type a distance then Enter. '
+                'X/Y locks an axis; S toggles wall snap; Q toggles square snap; Ctrl snaps to the grid.')
 
     def _apply(self, context, wall, dx, dy):
         try:
@@ -226,16 +248,22 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             return {'CANCELLED'}
         self.originated_on_press = self.from_handle and event.value == 'PRESS'
         self.plan, self.error, self.offset = {}, None, Vector((0., 0., 0.))
+        self.typed_distance = ''
+        self.raw_offset = Vector((0.,0.,0.))
+        self.numeric_direction = None
         self.draw_handle = bpy.types.SpaceView3D.draw_handler_add(_preview, (self,), 'WINDOW', 'POST_VIEW')
         context.window_manager.modal_handler_add(self)
-        self._hint('Drag or click a destination' if self.from_handle else 'Click a reference point, then a destination')
+        self._hint('Drag, or aim and type a distance' if self.from_handle
+                   else 'Click a reference point, then aim or type')
         return {'RUNNING_MODAL'}
 
     def _hint(self, text):
         lock = '' if self.axis == 'FREE' else f'  [{self.axis} only]'
         snap='on' if self.snap_enabled else 'off'
         square='on' if self.square_enabled else 'off'
-        self.area.header_text_set(f'{LABELS[self.edit_mode]}{lock}: {text}  |  S: wall snap {snap}  Q: 90° {square}  X/Y: lock  Ctrl: grid  Esc: cancel')
+        controls = ('Enter: confirm  Backspace: edit  Esc: cancel' if self.typed_distance else
+                    f'S: wall snap {snap}  Q: 90° {square}  X/Y: lock  Ctrl: grid  Esc: cancel')
+        self.area.header_text_set(f'{LABELS[self.edit_mode]}{lock}: {text}  |  {controls}')
         self.area.tag_redraw()
 
     def _cleanup(self):
@@ -248,14 +276,75 @@ class FZM_OT_edit_wall(bpy.types.Operator):
     def cancel(self, context):
         self._cleanup()
 
+    def _numeric_direction_from_cursor(self, event):
+        point = _on_ground(self.region, self.rv3d, _pixels(event,self.region), self.level)
+        if point is not None:
+            return point-self.anchor
+        return self.raw_offset
+
+    def _update_numeric(self, context, event):
+        self.snap_hit=None
+        self.plan, self.error = {}, None
+        self.offset = Vector((0.,0.,0.))
+        settings = context.scene.unit_settings
+        label = unit_label(settings)
+        raw = self.numeric_direction
+        try:
+            length = distance_to_world(self.typed_distance,settings)
+            vec = offset_for_distance(length,raw.xy,self.axis,epsilon=EPS) if raw is not None else None
+            if vec is None:
+                raw = self._numeric_direction_from_cursor(event)
+                vec = offset_for_distance(length,raw.xy,self.axis,epsilon=EPS)
+                if vec is None:
+                    axis = f' along {self.axis}' if self.axis!='FREE' else ''
+                    raise ValueError(f'Point the cursor{axis} in the move direction.')
+                self.numeric_direction = raw.copy()
+            self.offset = Vector((*vec,0.))
+            self.plan = self.model.checked_plan(self.wall,self.edit_mode,*vec)
+            if not self.plan:
+                raise ValueError('Enter a non-zero distance.')
+        except (ValueError, OverflowError) as error:
+            self.error = str(error)
+        message = self.error or f'Exact move; snap bypassed (bare number: {label})'
+        self._hint(f'Distance [{self.typed_distance}]  {message}')
+
+    def _text_input(self, context, event):
+        if event.value!='PRESS':
+            return False
+        if self.typed_distance and event.type=='BACK_SPACE':
+            self.typed_distance = self.typed_distance[:-1]
+            if not self.typed_distance:
+                self.numeric_direction = None
+            self._update(context,event)
+            return True
+        value = _distance_character(event)
+        if not value:
+            return False
+        if not self.typed_distance:
+            if value not in '0123456789.,+-':
+                return False
+            # Anchor exact distance to the pre-drag geometry and direction
+            # to raw cursor intent, even when a snap reversed/shortened it.
+            raw = self._numeric_direction_from_cursor(event)
+            if _restrict(raw,self.axis).length > EPS:
+                self.numeric_direction = raw.copy()
+        if len(self.typed_distance)<MAX_INPUT:
+            self.typed_distance += value
+        self._update_numeric(context,event)
+        return True
+
     def _update(self, context, event):
+        if self.typed_distance:
+            self._update_numeric(context,event)
+            return
         self.snap_hit=None
         point = _on_ground(self.region, self.rv3d, _pixels(event, self.region), self.level)
         if point is None:
             self.plan, self.error = {}, 'Use a top or angled view to move in the floor plane.'
             self._hint(self.error)
             return
-        self.offset = point - self.anchor
+        self.raw_offset = point - self.anchor
+        self.offset = self.raw_offset.copy()
         if event.ctrl:
             self.offset = hb_snap.snap_vector_to_grid(self.offset, context.scene.unit_settings, event.shift)
         self.offset = _restrict(self.offset, self.axis)
@@ -290,7 +379,7 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             self.error = None
         except ValueError as error:
             self.plan, self.error = {}, str(error)
-        self._hint(self.error or 'Click or release to confirm')
+        self._hint(self.error or 'Click or release, or type distance + Enter')
 
     def modal(self, context, event):
         if event.type in {'ESC', 'RIGHTMOUSE'}:
@@ -301,7 +390,11 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             return {'CANCELLED'}
         if hb_snap.event_is_pass_through(event):
             return {'PASS_THROUGH'}
-        if event.type in {'S','Q'} and event.value=='PRESS':
+        # Let an S finish inches/polegadas without intercepting the snap
+        # shortcut in every other context. X/Y and Q remain controls.
+        suffix_s = (self.typed_distance.lower().endswith(('inche','polegada'))
+                    and event.type=='S')
+        if event.type in {'S','Q'} and event.value=='PRESS' and not suffix_s:
             if event.type=='S':
                 self.snap_enabled=not self.snap_enabled
             else:
@@ -322,8 +415,21 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         inside = 0 <= xy.x < self.region.width and 0 <= xy.y < self.region.height
         if self.anchor is None and inside and event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             self.anchor = _on_ground(self.region, self.rv3d, xy, self.level)
-            self._hint('Click a destination' if self.anchor else 'Use a top or angled view')
+            self._hint('Click a destination, or aim and type' if self.anchor else 'Use a top or angled view')
             return {'RUNNING_MODAL'}
+        if self.anchor is not None:
+            if self.typed_distance and event.type in CONFIRM and event.value=='PRESS':
+                self._update_numeric(context,event)
+                if self.error or not self.plan:
+                    return {'RUNNING_MODAL'}
+                self._cleanup()
+                return self._apply(context,self.wall,self.offset.x,self.offset.y)
+            if self._text_input(context,event):
+                return {'RUNNING_MODAL'}
+            if self.typed_distance and event.type=='LEFTMOUSE':
+                if event.value=='RELEASE':
+                    self.originated_on_press = False
+                return {'RUNNING_MODAL'}
         if self.anchor is not None and inside:
             if event.type in {'MOUSEMOVE', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT'}:
                 self._update(context, event)

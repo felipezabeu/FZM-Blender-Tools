@@ -316,6 +316,7 @@ class HOME_BUILDER_PT_room_layout_walls(bpy.types.Panel):
             row.prop(hb_scene,'visual_wall_snap',icon='SNAP_ON')
             row.prop(hb_scene,'visual_wall_square')
             layout.operator('fzm_builder.edit_wall', text='Move Entire Wall', icon='HAND')
+        layout.operator('fzm_builder.divide_wall', icon='MOD_BOOLEAN')
 
         
         col = layout.column()
@@ -442,9 +443,9 @@ class HOME_BUILDER_PT_room_layout_floor(bpy.types.Panel):
         layout.operator("home_builder_walls.add_ceiling")
 
 
-# SUBPANEL: Shower Area
+# SUBPANEL: Wall Tiles
 class HOME_BUILDER_PT_room_layout_shower(bpy.types.Panel):
-    bl_label = "Shower Area"
+    bl_label = "Wall Tiles"
     bl_idname = "HOME_BUILDER_PT_room_layout_shower"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -474,7 +475,7 @@ class HOME_BUILDER_PT_room_layout_shower(bpy.types.Panel):
         row.operator("fzm_builder.shower_fixture", text="Edit Bench" if kind == 'BENCH' else "Add Bench",
                      icon="MESH_CUBE").kind = 'BENCH'
         if not fixture:
-            layout.label(text="Select a Shower Area wall tile face.")
+            layout.label(text="Select a wall tile face.")
 
 
 # SUBPANEL: Lighting

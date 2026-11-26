@@ -370,7 +370,7 @@ def update_floor_outline(context, floor):
     else:
         hosts = _legacy_hosts(floor,current,top,walls)
     poly = _new_outline(hosts,inverse,level)
-    plan = floor_regions.plan_regions(hosts,poly,inverse,level,walls)
+    plan = floor_regions.plan_regions(hosts,poly,matrix,inverse,level,walls)
     if plan[1]:
         return floor_regions.update_family(context,floor,initial=(hosts,poly,plan))
     warnings = []
@@ -409,7 +409,7 @@ class FZM_OT_update_floor_outline(bpy.types.Operator):
         elif created:
             self.report({'INFO'},f'Found {created} enclosed room(s) and created separate floors. Set finishes and room paint separately.')
         elif changed:
-            self.report({'INFO'},'Floor outline updated. Refresh Room Paint and Shower Area if used.')
+            self.report({'INFO'},'Floor outline updated. Refresh Room Paint and Wall Tiles if used.')
         else:
             self.report({'INFO'},'Floor outline already matches its walls. Existing baseboards checked.')
         return {'FINISHED'}

@@ -1,4 +1,4 @@
-"""Non-structural horizontal bounds for one wall's Shower Area tile finish."""
+"""Non-structural horizontal bounds for one wall's tile finish."""
 from math import isfinite
 
 import bpy
@@ -46,7 +46,7 @@ def _check_fixtures(context, area, wall):
     from .shower_fixtures import fixtures_for_area, VISUAL
     objects = sh.FZM_OT_shower_area.targets(context, area)
     path, _ = sh._ordered_path(objects, objects)
-    lines, corners = sh._finish_lines(path)
+    lines, corners = sh._finish_lines(path, sh.face_offset(sh.lining_thickness(area[sh.OPTIONS])))
     i = next(i for i, line in enumerate(lines) if line[0][0] == wall)
     a, d = corners[i], lines[i][3]
     left, right = sh.wall_span(lines[i], a, corners[i+1])
@@ -62,7 +62,7 @@ def _check_fixtures(context, area, wall):
                 raise ValueError(f"Wall Divider would cut across {fixture.name}. Move or edit the fixture first.")
 
 
-def set_wall_dividers(context, wall, start, stop):
+def set_wall_dividers(context, wall, start, stop, *, report=None):
     """Save bounds; refresh the linked tile face or roll back on any failure."""
     if not all(isfinite(v) for v in (start, stop)):
         raise ValueError("Use finite divider distances.")
@@ -99,6 +99,8 @@ def set_wall_dividers(context, wall, start, stop):
     except Exception:
         store(previous)
         raise
+    if area:
+        sh.refresh_baseboards(context, (wall,), report)
 
 
 class FZM_OT_wall_divider(bpy.types.Operator):
@@ -152,7 +154,7 @@ class FZM_OT_wall_divider(bpy.types.Operator):
                 raise ValueError("Select a Builder wall or tile face.")
             start = self.start if self.use_start and not self.clear else -1.
             stop = self.end if self.use_end and not self.clear else -1.
-            set_wall_dividers(context, wall, start, stop)
+            set_wall_dividers(context, wall, start, stop, report=self.report)
         except (ValueError, RuntimeError, KeyError) as error:
             self.report({'WARNING'}, str(error))
             return {'CANCELLED'}
@@ -272,7 +274,7 @@ class FZM_OT_pick_wall_divider(bpy.types.Operator):
                 if commit:
                     limits = list(wall.get(sh.WALL_DIVIDERS, (-1., -1.)))
                     limits[0 if self.boundary == 'START' else 1] = offset
-                    set_wall_dividers(context, wall, *limits)
+                    set_wall_dividers(context, wall, *limits, report=self.report)
                 else:
                     units = context.scene.unit_settings
                     distance = bpy.utils.units.to_string(units.system, 'LENGTH',

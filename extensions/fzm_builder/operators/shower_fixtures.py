@@ -1,5 +1,5 @@
 """Editable visualization fixtures attached to verified Shower Area walls."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import isfinite
 
 import bpy
@@ -65,6 +65,7 @@ class Host:
     lining_bottom: float
     lining_top: float
     thickness: float
+    finish_offset: float
     adjacent: dict
     lining_planes: list
 
@@ -88,12 +89,12 @@ def fixtures_for_area(context, area):
     return [o for o in context.scene.objects if o.get(FIXTURE) and o.get(AREA) == area]
 
 
-def _find_host(context, active, *, update=True):
+def _find_host(context, active, *, update=True, panel_override=None, lining_options=None):
     existing = fixture_from(active)
     if existing:
         area, wall = existing.get(AREA), existing.parent
         if not area or not wall or area.name not in context.scene.objects:
-            raise ValueError("The Shower Area host is missing. Remove this fixture.")
+            raise ValueError("The wall tile set is missing. Remove this fixture.")
     elif active and active.get(sh.PART) and sh.controller_for(active):
         area, wall = active.parent, active.get('fzm_shower_wall')
     elif active and active.get('IS_WALL_BP'):
@@ -101,33 +102,36 @@ def _find_host(context, active, *, update=True):
         area = next((o for o in context.scene.objects if o.get(sh.AREA)
                     and wall in o.get(sh.SOURCE, {}).values()), None)
         if not area:
-            raise ValueError("Tile this wall using Shower Area first.")
+            raise ValueError("Tile this wall using Wall Tiles first.")
     else:
-        raise ValueError("Select a Shower Area tile face, linked wall, or existing fixture.")
+        raise ValueError("Select a wall tile face, linked wall, or existing fixture.")
     if update:
         context.view_layer.update()
     walls = sh.FZM_OT_shower_area.targets(context, area)
     if wall not in walls or wall.library or wall.override_library or (existing and existing.library):
-        raise ValueError("Use an editable local Builder wall that is part of this Shower Area.")
+        raise ValueError("Use an editable local Builder wall that is part of this wall tile set.")
     # Use rigid, upright wall transforms; scaling can defeat the shell guarantee.
     axes = [col.to_3d() for col in wall.matrix_world.to_3x3().col]
     if (any(abs(v.length-1.) > sh.PLANAR for v in axes)
             or any(abs(axes[i].dot(axes[j])) > sh.PLANAR for i, j in ((0, 1), (0, 2), (1, 2)))):
         raise ValueError("Use an unscaled Builder wall; change wall size with Builder wall dimensions.")
     path, level = sh._ordered_path(walls, walls)
-    lines, corners = sh._finish_lines(path)
+    opt = area[sh.OPTIONS] if lining_options is None else lining_options
+    finish_offset = sh.face_offset(sh.lining_thickness(opt))
+    lines, corners = sh._finish_lines(path, finish_offset)
     i = next(i for i, line in enumerate(lines) if line[0][0] == wall)
     row, _, _, d, n = lines[i]
-    panel = next((o for o in area.children if o.get(sh.PART) and o.get('fzm_shower_wall') == wall), None)
+    panel = panel_override if panel_override is not None else next(
+        (o for o in area.children if o.get(sh.PART) and o.get('fzm_shower_wall') == wall), None)
     if not panel or not panel.data.materials or not panel.data.materials[0]:
-        raise ValueError("Refresh the Shower Area before adding a fixture.")
+        raise ValueError("Refresh Wall Tiles before adding a fixture.")
     length = (corners[i+1]-corners[i]).dot(d)
     lining_left, lining_right = sh.wall_span(lines[i], corners[i], corners[i+1])
     if any(abs(saved-actual) > sh.PLANAR for saved, actual in (
             (panel['fzm_shower_length_m'], length),
             (panel.get(sh.SPAN_START, 0.), lining_left),
             (panel.get(sh.SPAN_END, length), lining_right))):
-        raise ValueError("Refresh Shower Area after changing the walls, then edit the fixture.")
+        raise ValueError("Refresh Wall Tiles after changing the walls, then edit the fixture.")
     # Thickness must be orthogonal to the wall path on unscaled supported walls.
     thickness = abs(row[3].dot(n))
     if thickness <= (2*MARGIN) or abs(row[3].dot(d)) > sh.PLANAR:
@@ -137,11 +141,10 @@ def _find_host(context, active, *, update=True):
         adjacent['START'] = lines[i-1][4]
     if i+1 < len(lines) and length-lining_right <= sh.PLANAR:
         adjacent['END'] = lines[i+1][4]
-    opt = area[sh.OPTIONS]
     bottom = opt['bottom']
     return Host(wall, area, panel, corners[i], d, n, level, length, lining_left, lining_right,
-                bottom, min(bottom+opt['heights'][i], row[4]), thickness, adjacent,
-                [(line[1]+line[4]*sh.SEPARATION,line[4]) for j,line in enumerate(lines) if i != j]), existing
+                bottom, min(bottom+opt['heights'][i], row[4]), thickness, finish_offset, adjacent,
+                [(line[1]+line[4]*finish_offset,line[4]) for j,line in enumerate(lines) if i != j]), existing
 
 
 def _bounds(host, obj, depsgraph):
@@ -181,7 +184,7 @@ def _validate_geometry(context, host, spec, existing):
             if (left-outer_x < host.lining_left+MARGIN or right+outer_x > host.lining_right-MARGIN
                     or spec.bottom-outer_z < host.lining_bottom+MARGIN or top+outer_z > host.lining_top-MARGIN):
                 raise ValueError("The selected prefab outline must fit fully inside the tiled wall.")
-        bounds = ((left-outer_x,-spec.depth-sh.SEPARATION,spec.bottom-outer_z),
+        bounds = ((left-outer_x,-spec.depth-host.finish_offset,spec.bottom-outer_z),
                   (right+outer_x,.02,top+outer_z))
     elif spec.kind == 'BENCH':
         if top > host.lining_top-MARGIN:
@@ -211,7 +214,7 @@ def _validate_geometry(context, host, spec, existing):
             raise ValueError("Bench would cross a connected shower wall. Reduce depth or width.")
         bounds = ((min(left,dep_left),-SKIN,spec.bottom), (max(right,dep_right),spec.depth,top))
     else:
-        raise ValueError("Unknown Shower Area fixture.")
+        raise ValueError("Unknown wall tile fixture.")
     depsgraph = context.evaluated_depsgraph_get()
     check_walls = [host.wall]
     if spec.kind == 'BENCH':
@@ -350,7 +353,7 @@ def _prefab_ring(verts, faces, spec, shape):
 
 
 
-def _visual(context, host, spec, shape, root):
+def _visual(context, host, spec, shape, root, *, tile_spec=None):
     left, right, dep_left, dep_right, top = shape
     material = host.panel.data.materials[0]
     phase = host.panel['fzm_shower_phase_m']
@@ -364,11 +367,11 @@ def _visual(context, host, spec, shape, root):
         override_base = sh._base_finish(accent_name, spec.color, spec.filepath, base_material(previous))
     try:
         if override_base:
-            override = tile_material(override_base, TileSpec(**dict(host.area[sh.OPTIONS]['tile'])),
+            override = tile_material(override_base, tile_spec or TileSpec(**dict(host.area[sh.OPTIONS]['tile'])),
                                      one_image_per_tile=bool(spec.filepath))
         if spec.kind == 'NICHE':
             # Open toward positive depth (room); actual wall is cut behind this thin finish.
-            verts = _box(left+SKIN, right-SKIN, -spec.depth-sh.SEPARATION+SKIN, 0.,
+            verts = _box(left+SKIN, right-SKIN, -spec.depth-host.finish_offset+SKIN, 0.,
                          spec.bottom+SKIN, top-SKIN)
             faces = [tuple(reversed(BOX[i])) for i in (0,1,2,4,5)]
             accent = 2
@@ -413,8 +416,8 @@ def _check_recess(context, host, spec, shape):
         for v in (.18,.5,.82):
             x = left+(right-left)*u
             z = spec.bottom+(top-spec.bottom)*v
-            for start, normal, expected in ((.035,-d,-spec.depth-sh.SEPARATION),
-                   (-host.thickness-.035,d,-host.thickness-sh.SEPARATION)):
+            for start, normal, expected in ((.035,-d,-spec.depth-host.finish_offset),
+                   (-host.thickness-host.finish_offset-.035,d,-host.thickness-host.finish_offset)):
                 hit, local, _, _ = wall.ray_cast(world_to_local@host.world((x,start,z)),normal)
                 if not hit or abs(host.coords(wall.matrix_world @ local).y-expected) > .001:
                     raise ValueError("Could not verify a clean blind recess; the wall was left unchanged.")
@@ -471,7 +474,7 @@ def create_or_update(context, active, spec):
         drafts.append(_visual(context, host, spec, shape, root))
         if spec.kind == 'NICHE':
             left, right, _, _, top = shape
-            box = _box(left,right,-spec.depth-sh.SEPARATION,
+            box = _box(left,right,-spec.depth-host.finish_offset,
                        .025,spec.bottom,top)
             cutter = _mesh(context,host,'Shower Niche Cutter',box,BOX,root,cutter=True)
             drafts.append(cutter)
@@ -520,8 +523,57 @@ def remove_fixture(context, root, refresh=True):
     bpy.data.objects.remove(root,do_unlink=True)
 
 
-def sync_fixture_finish(context, area, panels, spec):
+def _reflow_fixture_visuals(context, area, panels, tile_spec, new_options, previous_panels):
+    """Meet the new finished plane without moving an existing niche's wall cut.
+
+    Stage all new visuals first. An invalid thickness/fixture combination must
+    keep the existing Wall Tiles, geometry, booleans and fixture settings.
+    """
+    old_by_wall = {item['fzm_shower_wall']:item for item in previous_panels}
+    new_by_wall = {item['fzm_shower_wall']:item for item in panels}
+    staged = []
+    try:
+        context.view_layer.update()
+        for root in fixtures_for_area(context,area):
+            old_panel, new_panel = old_by_wall.get(root.parent), new_by_wall.get(root.parent)
+            if old_panel is None or new_panel is None:
+                raise ValueError("Missing wall tile face for a linked niche or bench.")
+            old_host,_ = _find_host(context,root,update=False,panel_override=old_panel)
+            host,_ = _find_host(context,root,update=False,panel_override=new_panel,
+                                lining_options=new_options)
+            stored = dict(root[FIXTURE_OPTIONS])
+            if 'color' in stored:
+                stored['color'] = tuple(stored['color'])
+            spec = FixtureSpec(**stored)
+            if spec.kind == 'NICHE' or (spec.anchor == 'WALL' and not spec.full_width):
+                absolute = old_host.world((spec.offset,0.,0.))
+                spec = replace(spec, offset=max(0.,host.coords(absolute).x))
+            shape = _validate_geometry(context, host, spec, root)
+            old_visuals = tuple(o for o in root.children if o.get(VISUAL))
+            saved = asdict(spec)
+            draft = _visual(context,host,spec,shape,root,tile_spec=tile_spec)
+            staged.append((root,old_visuals,draft,saved))
+    except Exception:
+        for _,_,draft,_ in staged:
+            _remove_mesh(draft)
+        raise
+    context.view_layer.update()
+    for root,old_visuals,draft,saved in staged:
+        root[FIXTURE_OPTIONS] = saved
+        for old in old_visuals:
+            for child in list(old.children):
+                pose = child.matrix_world.copy()
+                child.parent = draft
+                child.matrix_world = pose
+            _remove_mesh(old)
+
+
+def sync_fixture_finish(context, area, panels, spec, *, new_options=None, previous_panels=()):
     """Rebase wall finishes/phase and keep separately assigned accent finishes."""
+    if (new_options is not None and sh.OPTIONS in area
+            and sh.lining_thickness(area[sh.OPTIONS]) != sh.lining_thickness(new_options)):
+        _reflow_fixture_visuals(context,area,panels,spec,new_options,previous_panels)
+        return
     by_wall = {p['fzm_shower_wall']:p for p in panels}
     changes = []
     try:
@@ -562,10 +614,10 @@ def sync_fixture_finish(context, area, panels, spec):
 class FZM_OT_shower_fixture(bpy.types.Operator):
     bl_idname = 'fzm_builder.shower_fixture'
     bl_label = 'Shower Niche or Bench'
-    bl_description = 'Place or edit a visualization fixture on a tiled Shower Area wall'
+    bl_description = 'Place or edit a visualization fixture on a wall with Wall Tiles'
     bl_options = {'UNDO'}
 
-    kind: bpy.props.EnumProperty(items=(('NICHE','Niche','Recess in a Shower Area wall'),
+    kind: bpy.props.EnumProperty(items=(('NICHE','Niche','Recess in a tiled wall'),
                                          ('BENCH','Bench','Bench against the wall or in a corner')))
     offset: bpy.props.FloatProperty(name='Distance From Start of Tile Face', unit='LENGTH', default=.35, min=0.,
         description='Distance along the untrimmed wall path, including any hidden section before a divider')

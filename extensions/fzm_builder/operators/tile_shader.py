@@ -1,6 +1,6 @@
 """Compile the shared tile layout into a Blender material; no tiles as objects."""
 from dataclasses import dataclass
-from math import isfinite
+from math import isfinite, sqrt
 
 import bpy
 
@@ -12,6 +12,16 @@ PATTERNS = (('STACK', "Stack", "Straight aligned joints"),
             ('HALF', "Brick 50%", "Half-pitch staggered joints"),
             ('THIRD', "Brick 33%", "One-third-pitch staggered joints"))
 FLOOR_PATTERNS = (('NONE', "No Tile Layout", "Keep the region's base finish"), *PATTERNS)
+SHAPES = (('RECTANGLE', 'Rectangle', 'Use the selected rectangular layout'),
+          ('SQUARE', 'Square', 'Equal square mosaic tiles'),
+          ('HEX', 'Hexagonal', 'Regular hexagons, measured across flats'),
+          ('PENNY', 'Penny Round', 'Round tiles, measured by diameter'))
+MOSAIC_SIZE = {'SQUARE': .0508, 'HEX': .0508, 'PENNY': .0254}
+def reset_mosaic_size(operator, context):
+    if operator.tile_shape in MOSAIC_SIZE:
+        operator.mosaic_size = MOSAIC_SIZE[operator.tile_shape]
+
+
 TILE_GROUP_VERSION = 1
 TILE_MATERIAL = "FZM_TILE_SURFACE"
 TILE_BASE = "FZM_TILE_BASE_MATERIAL"
@@ -27,10 +37,18 @@ class TileSpec:
     offset_u: float = 0.
     offset_v: float = 0.
     color: tuple = (.24, .23, .21, 1.)
+    shape: str = 'RECTANGLE'
 
 
 def validate(spec):
-    pitch_u, pitch_v, cycle = tile_pitch(spec.width, spec.height, spec.grout, spec.pattern)
+    if spec.shape not in {row[0] for row in SHAPES}:
+        raise ValueError("Unsupported tile shape.")
+    if spec.shape != 'RECTANGLE' and abs(spec.height - spec.width) > 1e-8:
+        raise ValueError("Mosaic shapes need equal tile dimensions.")
+    pattern = spec.pattern if spec.shape == 'RECTANGLE' else 'STACK'
+    pitch_u, pitch_v, cycle = tile_pitch(spec.width, spec.height, spec.grout, pattern)
+    if spec.shape in {'HEX', 'PENNY'}:
+        pitch_v = pitch_u * sqrt(3)
     if min(spec.width, spec.height) < .009999 or max(spec.width, spec.height) > 10.:
         raise ValueError("Tile width and length must be between 10 mm and 10 m.")
     if spec.grout > min(spec.width, spec.height) * .5:
@@ -42,8 +60,9 @@ def validate(spec):
     return pitch_u, pitch_v, cycle
 
 
-def _node_group():
-    name = "FZM Metric Tile Layout v1"
+def _node_group(shape='RECTANGLE'):
+    name = ("FZM Metric Tile Layout v1" if shape in {'RECTANGLE', 'SQUARE'}
+            else f"FZM Metric Mosaic {shape} v1")
     group = bpy.data.node_groups.get(name)
     if group and group.get('fzm_metric_tile_group') == TILE_GROUP_VERSION:
         return group
@@ -85,6 +104,40 @@ def _node_group():
 
     u = run('SUBTRACT', split.outputs['X'], src.outputs['Phase U'])
     v = run('SUBTRACT', split.outputs['Y'], src.outputs['Phase V'])
+    if shape in {'HEX', 'PENNY'}:
+        px, py = src.outputs['Pitch U'], src.outputs['Pitch V']
+
+        def centered(value, pitch):
+            half = run('MULTIPLY', pitch, .5)
+            return run('SUBTRACT', run('FLOORED_MODULO', run('ADD', value, half), pitch), half)
+
+        a = centered(u, px), centered(v, py)
+        b = centered(run('SUBTRACT', u, run('MULTIPLY', px, .5)), px), centered(
+                     run('SUBTRACT', v, run('MULTIPLY', py, .5)), py)
+        def squared(pair):
+            x, y = pair
+            return run('ADD', run('MULTIPLY', x, x), run('MULTIPLY', y, y))
+        da, db = squared(a), squared(b)
+        use_b = run('LESS_THAN', db, da)
+        def pick(i):
+            return run('ADD', a[i], run('MULTIPLY', use_b, run('SUBTRACT', b[i], a[i])))
+        x, y = pick(0), pick(1)
+        half_width = run('MULTIPLY', src.outputs['Tile Width'], .5)
+        if shape == 'HEX':
+            ax, ay = run('ABSOLUTE', x), run('ABSOLUTE', y)
+            radius = run('MAXIMUM', ax, run('MULTIPLY', run('ADD', ax, run('MULTIPLY', ay, sqrt(3))), .5))
+            inside = run('LESS_THAN', radius, half_width)
+            image_height = run('MULTIPLY', src.outputs['Tile Width'], 2 / sqrt(3))
+        else:
+            inside = run('LESS_THAN', run('MINIMUM', da, db), run('MULTIPLY', half_width, half_width))
+            image_height = src.outputs['Tile Width']
+        links.new(run('SUBTRACT', 1., inside), dst.inputs['Grout'])
+        combine = nodes.new('ShaderNodeCombineXYZ')
+        links.new(run('ADD', .5, run('DIVIDE', x, src.outputs['Tile Width'])), combine.inputs['X'])
+        links.new(run('ADD', .5, run('DIVIDE', y, image_height)), combine.inputs['Y'])
+        links.new(combine.outputs[0], dst.inputs['Tile UV'])
+        return group
+
     row = run('FLOOR', run('DIVIDE', v, src.outputs['Pitch V']))
     shift = run('DIVIDE', run('FLOORED_MODULO', row, src.outputs['Cycle']), src.outputs['Cycle'])
     u = run('ADD', u, run('MULTIPLY', shift, src.outputs['Pitch U']))
@@ -157,7 +210,7 @@ def tile_material(source, settings, *, one_image_per_tile=False):
         uv.uv_map = 'UVMap'
         uv.location = (-440, -440)
         layout = nodes.new('ShaderNodeGroup')
-        layout.node_tree = _node_group()
+        layout.node_tree = _node_group(settings.shape)
         layout.label = 'FZM metric tile joints'
         layout.location = (-220, -440)
         links.new(uv.outputs["UV"], layout.inputs['Surface UV (m)'])
