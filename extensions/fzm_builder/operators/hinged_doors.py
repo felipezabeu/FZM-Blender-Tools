@@ -4,7 +4,9 @@ from math import isfinite, pi
 import bpy
 
 from .. import hb_types
-from . import native_doors as nd
+from . import berkway_doors, door_panel_fill, native_doors as nd
+from . import hinged_kinematics as kin
+from .hinged_kinematics import LEAF_THICKNESS, select_scalar as _scalar_select
 
 ENABLED = 'FZM_HINGED_3D_ENABLED'
 VISUAL = 'FZM_HINGED_3D_VISUAL'
@@ -17,7 +19,7 @@ HARDWARE_SOCKET = 'Hardware Style'
 HARDWARE_FINISH = 'FZM_HINGED_3D_HARDWARE_FINISH'
 FINISH_SOCKET = 'Hardware Finish'
 FINISH_ITEMS = (
-    ('BLACK','Black','Dark matte finish'),
+    ('BLACK','Matte Black','Dark matte finish'),
     ('BRUSHED_NICKEL','Brushed Nickel','Neutral brushed nickel finish'),
     ('BRUSHED_GOLD','Brushed Gold','Warm brushed gold finish'),
 )
@@ -31,6 +33,13 @@ HARDWARE_ITEMS = (
 )
 HARDWARE_VALUES = {'NONE': 0., 'KNOB': 1., 'LEVER': 2.}
 HINGED_INPUTS = ('Width', 'Height', 'Depth', nd.STYLE, nd.OPEN, 'Inside', 'Left', 'Double')
+
+STYLE_BERKWAY = 'BERKWAY'
+STYLES = (*nd.STYLES, (STYLE_BERKWAY,'Berkway','White flush slab with fine routed grooves',6))
+STYLE_VALUES = {**nd.STYLE_VALUES,STYLE_BERKWAY:6.}
+HARDWARE_VERSIONS = {2,4,6,7}
+SUPPORTED_VERSIONS = {1,2,3,4,5,6,7}
+PHOTO_SHAKER_STYLES = {nd.STYLE_SHAKER, nd.STYLE_SHAKER_2, nd.STYLE_SHAKER_5}
 
 
 def cage_for(obj):
@@ -77,7 +86,7 @@ def _finish_material(key):
     if material and material.get(FINISH_MATERIAL)==key:
         return material
     rgb, metallic, roughness, anisotropy = {
-        'BLACK': ((.019,.021,.026),.50,.39,0.),
+        'BLACK': ((.019,.021,.026),.34,.59,0.),
         'BRUSHED_NICKEL': ((.48,.49,.50),.87,.30,.20),
         'BRUSHED_GOLD': ((.68,.44,.18),.84,.33,.23),
     }[key]
@@ -101,14 +110,6 @@ def size_error(width, height, double):
     if width < (.52 if double else .30) or height < .68:
         return 'This opening is too small for a 3D hinged leaf. Keep the leaf off or enlarge the opening.'
     return None
-
-
-def _scalar_select(a, condition, no, yes):
-    switch = a.nodes.new('GeometryNodeSwitch')
-    switch.input_type = 'FLOAT'
-    for value, name in ((condition,'Switch'), (no,'False'), (yes,'True')):
-        a.wire(value,switch.inputs[name])
-    return switch.outputs[0]
 
 
 def _hardware(a, leaf_w, height, center_z, thickness, latch_sign):
@@ -168,11 +169,13 @@ def build_group(version=1):
     group['fzm_hinged_door_group'] = version
     group.interface.new_socket(name='Geometry',in_out='OUTPUT',socket_type='NodeSocketGeometry')
     group.interface.new_socket(name='Geometry',in_out='INPUT',socket_type='NodeSocketGeometry').hide_in_modifier = True
-    inputs=(('Width',.81,10.),('Height',2.03,8.),('Depth',.15,2.),(nd.STYLE,0.,5.),
+    inputs=(('Width',.81,10.),('Height',2.03,8.),('Depth',.15,2.),(nd.STYLE,0.,6. if version>=5 else 5.),
             (nd.OPEN,0.,1.),('Inside',1.,1.),('Left',1.,1.),('Double',0.,1.))
-    if version >= 2:
+    if version in HARDWARE_VERSIONS:
         # Append to keep every v1 FCurve and pose/style socket identifier stable.
         inputs=(*inputs,(HARDWARE_SOCKET,0.,2.),(FINISH_SOCKET,FINISH_VALUES[DEFAULT_FINISH],2.))
+    if version >= 7:
+        inputs=(*inputs,(door_panel_fill.INPUT,0.,1.))
     for key, default, maximum in inputs:
         socket = group.interface.new_socket(name=key,in_out='INPUT',socket_type='NodeSocketFloat')
         socket.default_value, socket.min_value, socket.max_value = default,0.,maximum
@@ -180,36 +183,49 @@ def build_group(version=1):
     a=nd.Assembly(group)
     w,h,d=(a.inputs.outputs[k] for k in ('Width','Height','Depth'))
     inside,left,double=(a.calc('GREATER_THAN',a.inputs.outputs[k],.5) for k in ('Inside','Left','Double'))
-    room_sign=_scalar_select(a,inside,1.,-1.)
-    gap = .004
-    thickness = .034925
-    leaf_w = _scalar_select(a,double,a.sub(w,2*gap),a.mul(a.sub(w,2*gap+.005),.5))
+    pivot_y, room_sign = kin.hinge_y_and_direction(a, d, inside)
+    thickness = LEAF_THICKNESS
+    leaf_w = kin.leaf_width(a, w, double)
     leaf_h = a.sub(h,.016)
     center_z = a.add(.011,a.mul(leaf_h,.5))
-    leaf = a.leaf(leaf_w,leaf_h,thickness=thickness)
+    profile = {}
+    if version >= 7:
+        glass = a.calc('GREATER_THAN', a.inputs.outputs[door_panel_fill.INPUT], .5)
+        material = a.nodes.new('GeometryNodeSwitch')
+        material.input_type = 'MATERIAL'
+        a.wire(glass,material.inputs['Switch'])
+        a.wire(nd.material('inset'),material.inputs['False'])
+        a.wire(door_panel_fill.glass_material(),material.inputs['True'])
+        insert = _scalar_select(a,glass,thickness-.011,.006)
+        profile = dict(shaker_variant='HINGED',shaker_insert_material=material.outputs[0],
+                       shaker_insert_thickness=insert)
+    leaf = a.leaf(leaf_w,leaf_h,thickness=thickness,six_variant='FULL' if version>=3 else None,**profile)
+    if version>=5:
+        berkway=berkway_doors.build_leaf(a,leaf_w,leaf_h,thickness)
+        leaf=a.select(a.calc('GREATER_THAN',a.inputs.outputs[nd.STYLE],5.5),leaf,berkway)
     # Pivot around the room-side corner so the panel clears the jamb.
-    # Existing annotation conventions:
-    # Inside is -Y, and Is Left puts the pivot at maximum X.
-    pivot_y = _scalar_select(a,inside,d,0.)
     local_y = a.mul(room_sign,-thickness/2)
-    theta = a.mul(a.mul(a.inputs.outputs[nd.OPEN],pi/2),room_sign)
+    theta = a.mul(a.mul(a.inputs.outputs[nd.OPEN],kin.SWING_ANGLE),room_sign)
 
     def at_jamb(sign):
         x0 = a.mul(leaf_w,sign*.5)
         angle = a.mul(theta,sign)
         c,s = a.calc('COSINE',angle),a.calc('SINE',angle)
-        pivot_x = gap if sign > 0 else a.sub(w,gap)
+        pivot_x = kin.hinge_x(a, w, sign > 0)
         x = a.add(pivot_x,a.sub(a.mul(x0,c),a.mul(local_y,s)))
         y = a.add(pivot_y,a.add(a.mul(x0,s),a.mul(local_y,c)))
         part=leaf
-        if version >= 2:
+        if version in HARDWARE_VERSIONS:
             enabled,hardware=_hardware(a,leaf_w,h,center_z,thickness,sign)
             part=a.select(enabled,leaf,a.join(leaf,hardware))
         return a.transform(part,(x,y,center_z),angle)
 
     low,high=at_jamb(1),at_jamb(-1)
     output=a.select(double,a.select(left,low,high),a.join(low,high))
-    min_width=_scalar_select(a,double,.52,.30)
+    # Match the accepted Single/Double clamps in the new group: prior
+    # shipped graphs had these two switch constants reversed. Never mutate
+    # a saved old graph in place.
+    min_width=(_scalar_select(a,double,.30,.52) if version>=5 else _scalar_select(a,double,.52,.30))
     too_small=a.add(a.calc('LESS_THAN',w,min_width),a.calc('LESS_THAN',h,.68))
     mask=a.nodes.new('GeometryNodeSwitch')
     mask.input_type='GEOMETRY'
@@ -231,43 +247,59 @@ def _remove_visual(obj):
         bpy.data.meshes.remove(mesh)
 
 
-def _ensure_hardware_input(obj):
+def _upgrade_group(obj, version):
     modifier=obj.modifiers[obj.home_builder.mod_name]
     previous=modifier.node_group
-    if previous.get('fzm_hinged_door_group') == 2:
+    old_version=previous.get('fzm_hinged_door_group')
+    if old_version == version:
         return
-    if previous.get('fzm_hinged_door_group') != 1:
-        raise ValueError("This custom door group cannot be upgraded for Builder hardware.")
-    new=build_group(2)
-    for key in HINGED_INPUTS:
+    if old_version not in SUPPORTED_VERSIONS:
+        raise ValueError("This custom hinged door group cannot be upgraded.")
+    new=build_group(version)
+    keys=(*HINGED_INPUTS,HARDWARE_SOCKET,FINISH_SOCKET) if old_version in HARDWARE_VERSIONS else HINGED_INPUTS
+    for key in keys:
         old_socket=previous.interface.items_tree.get(key)
-        if not old_socket or old_socket.identifier != new.interface.items_tree[key].identifier:
+        new_socket=new.interface.items_tree.get(key)
+        if not old_socket or not new_socket or old_socket.identifier != new_socket.identifier:
             raise ValueError("Cannot preserve the inputs of this existing hinged door.")
     modifier.node_group=new
 
 
+def _desired_version(old, style, hardware, finish):
+    if old == 7 or style in PHOTO_SHAKER_STYLES:
+        return 7
+    with_hardware = old in HARDWARE_VERSIONS or hardware != 'NONE'
+    if old in (5,6) or style == STYLE_BERKWAY:
+        return 6 if with_hardware else 5
+    with_reference = old in (3,4) or style == nd.STYLE_SIX_PANEL or (hardware != 'NONE' and finish == 'BLACK')
+    return (4 if with_hardware else 3) if with_reference else (2 if with_hardware else 1)
 
-def set_visual(door, enabled, style, pose, hardware=None, finish=None):
+
+def set_visual(door, enabled, style, pose, hardware=None, finish=None, fill=None):
     swing=swing_for(door)
     if not swing:
         if enabled:
             raise ValueError('Only Single and Double hinged doors can have a 3D leaf.')
         return None
-    if style not in {item[0] for item in nd.STYLES} or not isfinite(pose):
+    if style not in {item[0] for item in STYLES} or not isfinite(pose):
         raise ValueError('Choose a supported door style and pose.')
     hardware=hardware_for(door) if hardware is None else hardware
     if hardware not in HARDWARE_VALUES:
         raise ValueError("Choose None, Knob or Lever.")
     finish=finish_for(door) if finish is None else finish
     if finish not in FINISH_VALUES:
-        raise ValueError("Choose Black, Brushed Nickel or Brushed Gold.")
+        raise ValueError("Choose Matte Black, Brushed Nickel or Brushed Gold.")
+    if fill is None or style != nd.STYLE_SHAKER_5:
+        fill=door_panel_fill.panel_fill_for(door)
+    if fill not in {'SOLID','FROSTED'}:
+        raise ValueError('Choose Solid or Frosted Glass.')
     obj=visual_for(door)
     pose=max(0.,min(1.,pose))
     if enabled:
         if obj is None:
             cage = hb_types.GeoNodeCage(door)
             collection = door.users_collection[0] if door.users_collection else bpy.context.collection
-            group=build_group(2 if hardware != 'NONE' else 1)
+            group=build_group(_desired_version(1,style,hardware,finish))
             obj=bpy.data.objects.new('Hinged Door | 3D Leaf',bpy.data.meshes.new('FZM Hinged Door Input'))
             try:
                 collection.objects.link(obj)
@@ -288,13 +320,17 @@ def set_visual(door, enabled, style, pose, hardware=None, finish=None):
                 raise
             door[DISPLAY]=door.display_type
             door[IN_FRONT]=door.show_in_front
-        if hardware != 'NONE':
-            _ensure_hardware_input(obj)
+        old_version=obj.modifiers[obj.home_builder.mod_name].node_group.get('fzm_hinged_door_group')
+        version=_desired_version(old_version,style,hardware,finish)
+        if old_version != version and (style in PHOTO_SHAKER_STYLES or style in (nd.STYLE_SIX_PANEL,STYLE_BERKWAY) or hardware != 'NONE'):
+            _upgrade_group(obj,version)
         visual=hb_types.GeoNodeObject(obj)
         if visual.has_input(HARDWARE_SOCKET):
             visual.set_input(HARDWARE_SOCKET,HARDWARE_VALUES[hardware])
             visual.set_input(FINISH_SOCKET,FINISH_VALUES[finish])
-        visual.set_input(nd.STYLE,float(nd.STYLE_VALUES[style]))
+        if visual.has_input(door_panel_fill.INPUT):
+            visual.set_input(door_panel_fill.INPUT,float(style==nd.STYLE_SHAKER_5 and fill=='FROSTED'))
+        visual.set_input(nd.STYLE,float(STYLE_VALUES[style]))
         visual.set_input(nd.OPEN,pose)
         obj.update_tag()
         door[ENABLED]=True
@@ -310,6 +346,11 @@ def set_visual(door, enabled, style, pose, hardware=None, finish=None):
             if key in door:
                 del door[key]
     door[STYLE],door[POSE]=style,pose
+    if style == nd.STYLE_SHAKER_5:
+        if fill == 'FROSTED':
+            door[door_panel_fill.KEY]=fill
+        elif door_panel_fill.KEY in door:
+            del door[door_panel_fill.KEY]
     if hardware == 'NONE':
         if HARDWARE in door:
             del door[HARDWARE]

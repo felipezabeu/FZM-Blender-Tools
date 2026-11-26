@@ -783,6 +783,15 @@ def _replace_baseboard_preserving_materials(trim, mesh):
             slot.material = material
 
 
+def _same_baseboard_geometry(before, after, tolerance=1e-5):
+    """Avoid replacing an already aligned mesh or its per-face data."""
+    return (len(before.vertices)==len(after.vertices)
+            and len(before.polygons)==len(after.polygons)
+            and all((a.co-b.co).length<=tolerance for a,b in zip(before.vertices,after.vertices))
+            and all(tuple(a.vertices)==tuple(b.vertices)
+                    for a,b in zip(before.polygons,after.polygons)))
+
+
 def refresh_wall_baseboards(context, walls):
     """Refresh only existing trims attached to a changed Builder wall.
 
@@ -796,6 +805,18 @@ def refresh_wall_baseboards(context, walls):
                 if trim.get(BASEBOARD) and trim.type == 'MESH' and trim.library is None
                 and trim.override_library is None and trim.parent and trim.parent.get('IS_FLOOR_BP')
                 and (refs := _wall_refs(trim, context.scene)) & walls]
+    return _refresh_existing_baseboards(context, affected)
+
+
+def refresh_floor_baseboards(context, floor):
+    """Update only existing trim on the floor whose outline was refreshed."""
+    affected = [(child, _wall_refs(child, context.scene)) for child in floor.children
+                if child.get(BASEBOARD) and child.type == 'MESH'
+                and not (child.library or child.override_library)]
+    return _refresh_existing_baseboards(context, affected)
+
+
+def _refresh_existing_baseboards(context, affected):
     if not affected:
         return []
     context.view_layer.update()
@@ -803,15 +824,20 @@ def refresh_wall_baseboards(context, walls):
     for trim, refs in affected:
         try:
             profile, height, thickness = (trim[key] for key in ('profile', 'height', 'thickness'))
-            if trim.get('wall_source', 'SELECTED') == 'AUTO':
+            mode = trim.get('wall_source') or ('SELECTED' if refs else 'AUTO')
+            if mode == 'AUTO':
                 v, f, refs = automatic_baseboard_geometry(context, trim.parent, profile,
                                                           height, thickness, allow_empty=True)
             else:
                 v, f = baseboard_geometry(context, trim.parent, refs, profile,
                                           height, thickness, allow_empty=True)
             mesh = create_mesh('Room Baseboards', v, f)
-            _replace_baseboard_preserving_materials(trim, mesh)
-            _save_wall_refs(trim, refs)
+            if _same_baseboard_geometry(trim.data,mesh):
+                bpy.data.meshes.remove(mesh)
+            else:
+                _replace_baseboard_preserving_materials(trim,mesh)
+            if refs!=_wall_refs(trim,context.scene):
+                _save_wall_refs(trim,refs)
         except (KeyError, RuntimeError, ValueError) as error:
             failures.append(f'{trim.name}: {error}')
     return failures

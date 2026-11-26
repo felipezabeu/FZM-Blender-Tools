@@ -17,7 +17,7 @@ class HOME_BUILDER_OT_change_units(bpy.types.Operator):
 
 
 class HOME_BUILDER_MT_main_menu(bpy.types.Menu):
-    bl_label = "Home Builder"
+    bl_label = "FZM Builder"
     bl_idname = "HOME_BUILDER_MT_main_menu"
 
     def draw(self, context):
@@ -89,10 +89,13 @@ class HOME_BUILDER_MT_door_commands(bpy.types.Menu):
             layout.separator()
         if bpy.ops.fzm_builder.edit_door.poll():
             layout.operator("fzm_builder.edit_door", icon='PREFERENCES')
-        layout.operator("fzm_builder.door_casing")
         if bpy.ops.home_builder_doors_windows.toggle_double_door.poll():
+            layout.operator("home_builder_doors_windows.toggle_double_door")
+            layout.operator("home_builder_doors_windows.flip_door_swing")
+            if bpy.ops.home_builder_doors_windows.flip_door_hand.poll():
+                layout.operator("home_builder_doors_windows.flip_door_hand")
             layout.separator()
-            layout.operator("home_builder_doors_windows.toggle_double_door", text="Toggle Double Door")
+        layout.operator("fzm_builder.door_casing")
         layout.separator()
         layout.operator("home_builder_doors_windows.delete_door_window", text="Delete Door").object_type = 'DOOR'
 

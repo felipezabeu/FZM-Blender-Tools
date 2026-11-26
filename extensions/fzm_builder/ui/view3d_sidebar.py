@@ -312,6 +312,9 @@ class HOME_BUILDER_PT_room_layout_walls(bpy.types.Panel):
         row.prop(hb_scene, 'wall_type', text="")
         active = context.active_object
         if active and active.get('IS_WALL_BP'):
+            row=layout.row(align=True)
+            row.prop(hb_scene,'visual_wall_snap',icon='SNAP_ON')
+            row.prop(hb_scene,'visual_wall_square')
             layout.operator('fzm_builder.edit_wall', text='Move Entire Wall', icon='HAND')
 
         
@@ -374,8 +377,7 @@ class HOME_BUILDER_PT_room_layout_doors_windows(bpy.types.Panel):
         
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator('home_builder_doors_windows.place_door', text="Single Door", icon='MESH_CUBE')
-        row.operator('home_builder_doors_windows.place_double_door', text="Double Door", icon='MESH_CUBE')
+        row.operator('home_builder_doors_windows.place_door', text="Hinged Door", icon='MESH_CUBE')
         row.operator('home_builder_doors_windows.place_open_door', text="Open", icon='MESH_CUBE')
         layout.operator('fzm_builder.place_native_door', icon='MESH_CUBE')
         row = layout.row(align=True)
@@ -431,6 +433,7 @@ class HOME_BUILDER_PT_room_layout_floor(bpy.types.Panel):
         row = layout.row()
         row.operator("home_builder_walls.add_floor")
         row.operator("home_builder_walls.draw_floor_cutter", icon="MOD_BOOLEAN")
+        layout.operator("fzm_builder.update_floor_outline", icon="FILE_REFRESH")
         layout.operator("fzm_builder.floor_divider")
         layout.operator("fzm_builder.room_baseboards", icon="MOD_SOLIDIFY")
         layout.operator("fzm_builder.floor_finish", icon="MATERIAL")
