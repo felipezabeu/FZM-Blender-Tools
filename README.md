@@ -7,6 +7,7 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 | Extensão | Versão | Função |
 |---|---:|---|
 | FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
+| FZM Builder | 5.1.11 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
 
 ### Alterações da vanity 1.2
@@ -30,9 +31,9 @@ No Blender, `Edit > Preferences > Get Extensions > menu > Install from Disk`, es
 
 O workflow em `.github/workflows/pages.yml` constrói os pacotes com Blender 5.1.2, gera o `index.json` oficial de repositório de extensões e publica como GitHub Pages **após configurar Pages com fonte GitHub Actions**, num repositório acessível ao Blender (público sem autenticação).
 
-No Blender: `Edit > Preferences > Get Extensions > Repositories > + > Add Remote Repository`, usando `https://<usuario>.github.io/<repositorio>/index.json`. A nova versão será detectada após sincronização e exigirá confirmação para instalar.
+No Blender: `Edit > Preferences > Get Extensions > Repositories > + > Add Remote Repository`, usando `https://felipezabeu.github.io/FZM-Blender-Tools/index.json`. A nova versão será detectada após sincronização e exigirá confirmação para instalar.
 
-**Pendente:** configurar Pages como fonte GitHub Actions, publicar e testar a atualização no Blender. Arquivos instalados inicialmente via ZIP podem precisar ser migrados uma única vez ao repositório remoto.
+Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto e deixe o Home Builder original desativado. Desative a cópia local do FZM Builder antes de habilitar a versão do repositório remoto. Mantenha somente uma instância ativa; a integração ainda utiliza os mesmos IDs dos operadores do Home Builder original. Depois da configuração inicial, use a sincronização e a atualização de extensões do próprio Blender.
 
 ## Limites
 

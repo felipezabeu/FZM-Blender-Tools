@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'extensions/**'
+      - 'scripts/prepare_builder_wheels.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 permissions:
@@ -27,6 +28,8 @@ jobs:
           curl -fL --retry 3 https://download.blender.org/release/Blender5.1/blender-5.1.2-linux-x64.tar.xz -o /tmp/blender.tar.xz
           tar -xJf /tmp/blender.tar.xz -C /tmp
           /tmp/blender-5.1.2-linux-x64/blender --version
+      - name: Restore pinned FZM Builder wheels
+        run: python3 scripts/prepare_builder_wheels.py
       - name: Build and index extension repository
         run: |
           set -euo pipefail
@@ -34,8 +37,30 @@ jobs:
           mkdir -p site
           "$B" --command extension build --source-dir ./extensions/fzm_vanity_controls --output-dir ./site
           "$B" --command extension build --source-dir ./extensions/fzm_tile_panels --output-dir ./site
+          "$B" --command extension build --source-dir ./extensions/fzm_builder --output-dir ./site --split-platforms
+          for archive in site/fzm_builder-*.zip; do
+            "$B" --command extension validate "$archive"
+          done
           "$B" --command extension server-generate --repo-dir ./site --html
           test -s site/index.json
+      - name: Verify generated Builder listing
+        run: |
+          python3 - <<'PYINDEX'
+          from pathlib import Path
+          import hashlib, json, tomllib
+          site = Path("site")
+          manifest = tomllib.loads(Path("extensions/fzm_builder/blender_manifest.toml").read_text(encoding="utf-8"))
+          entries = json.loads((site / "index.json").read_text(encoding="utf-8"))["data"]
+          assert {"fzm_vanity_controls", "fzm_tile_panels"} <= {entry["id"] for entry in entries}
+          builder = [entry for entry in entries if entry["id"] == manifest["id"]]
+          assert len(builder) == len(manifest["platforms"]), builder
+          assert {tuple(entry["platforms"]) for entry in builder} == {(platform,) for platform in manifest["platforms"]}, builder
+          for entry in builder:
+              assert entry["version"] == manifest["version"], entry
+              archive = site / entry["archive_url"].removeprefix("./")
+              assert archive.stat().st_size == entry["archive_size"], entry
+              assert "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() == entry["archive_hash"], entry
+          PYINDEX
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
