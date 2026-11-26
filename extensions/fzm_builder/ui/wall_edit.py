@@ -11,6 +11,7 @@ from mathutils import Vector
 from .. import hb_snap, hb_types
 from ..hb_placement import NUMBER_KEYS
 from ..operators.wall_edit import SceneGraph, EPS, START, END
+from ..operators.wall_baseboard import footprint as wall_footprint
 from ..operators.wall_move_input import MAX_INPUT, distance_to_world, offset_for_distance, unit_label
 from ..operators.wall_edit_snap import (
     Guide, SquareGuide, SquareHit, PIXELS, candidates, square_candidates, square_markers,
@@ -72,15 +73,13 @@ def _guides(model, active, mode, view_layer):
                 or not wall.visible_get(view_layer=view_layer)
                 or wall.get('IS_FAKE_WALL') or wall.get('WALL_TYPE')=='Fake'):
             continue
-        result.append(Guide(wall.name,segment.start,segment.end))
-        native=model.walls[wall]
-        if native.has_input('Thickness'):
-            thickness=native.get_input('Thickness')
-            if thickness and thickness>EPS:
-                shift=wall.matrix_world.to_3x3() @ Vector((0.,thickness,0.))
-                if abs(shift.z)<=.002 and shift.xy.length>EPS:
-                    a,b=((p[0]+shift.x,p[1]+shift.y) for p in (segment.start,segment.end))
-                    result.append(Guide(wall.name,a,b))
+        try:
+            corners, _ = wall_footprint(wall)
+        except ValueError:
+            result.append(Guide(wall.name,segment.start,segment.end))
+            continue
+        for a,b in zip(corners,corners[1:]+corners[:1]):
+            result.append(Guide(wall.name,tuple(a),tuple(b)))
     return tuple(result)
 
 

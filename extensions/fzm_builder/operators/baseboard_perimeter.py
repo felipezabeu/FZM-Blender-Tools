@@ -33,6 +33,7 @@ class Wall:
     start: Vector
     end: Vector
     offset: Vector
+    corners: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,7 @@ def floor_outline(floor):
 
 
 def physical_walls(context, level):
+    from .wall_baseboard import footprint
     for obj in context.view_layer.objects:
         if (not obj.get('IS_WALL_BP') or obj.type != 'MESH'
                 or obj.get('IS_FAKE_WALL') or obj.get('WALL_TYPE') == 'Fake'):
@@ -143,7 +145,11 @@ def physical_walls(context, level):
                 or (end.to_2d() - base.to_2d()).length < EPS
                 or (far.to_2d() - base.to_2d()).length < EPS):
             continue
-        yield Wall(obj, base.to_2d(), end.to_2d(), far.to_2d() - base.to_2d())
+        try:
+            corners, _ = footprint(obj)
+        except ValueError:
+            corners = None
+        yield Wall(obj, base.to_2d(), end.to_2d(), far.to_2d() - base.to_2d(), corners)
 
 
 def edge_runs(edge, walls):
@@ -155,17 +161,19 @@ def edge_runs(edge, walls):
             continue
         if wall_direction.dot(edge.direction) < 0:
             wall_direction.negate()
-        lo, hi = sorted(((wall.start - edge.start).dot(edge.direction),
-                         (wall.end - edge.start).dot(edge.direction)))
+        inward = Vector((-wall_direction.y, wall_direction.x))
+        far = wall.start + wall.offset
+        far_side = wall.offset.dot(inward) > 0
+        outer, inner = (wall.start, far) if far_side else (far, wall.start)
+        # Use the length of the actual trimmed face, not the wall datum:
+        # the far face can extend by the full thickness at a 45-degree miter.
+        a, b = inner, wall.end + (wall.offset if far_side else Vector((0.,0.)))
+        if wall.corners is not None:
+            a,b = (wall.corners[3],wall.corners[2]) if far_side else wall.corners[:2]
+        lo, hi = sorted(((a-edge.start).dot(edge.direction),(b-edge.start).dot(edge.direction)))
         lo, hi = max(0., lo), min(edge.length, hi)
         if hi - lo < EPS:
             continue
-        inward = Vector((-wall_direction.y, wall_direction.x))
-        far = wall.start + wall.offset
-        if wall.offset.dot(inward) > 0:
-            outer, inner = wall.start, far
-        else:
-            outer, inner = far, wall.start
         face = Face(wall, inner, wall_direction, inward)
         # The floor edge can be on either wall datum, or inside a real wall
         # footprint (e.g. a floor split down the center of a partition).

@@ -7,8 +7,15 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 | Extensão | Versão | Função |
 |---|---:|---|
 | FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
-| FZM Builder | 5.1.18 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.20 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.20
+
+- O rodapé automático acompanha a ponta real da face da parede nos cantos em meia-esquadria, sem parar antes do encontro. Para corrigir rodapés existentes, reaplique **Add Baseboards → Automatic**.
+- O snap das alças de parede usa as quatro arestas e os vértices reais, inclusive nas pontas em ângulo. **S** alterna o snap durante o arraste.
+- **Update Floor Outline** leva o piso até a face interna mesmo sem porta. Reconhece cantos em contato físico e preserva o piso se o contorno continuar aberto.
+- Uma caixa provisória de **Add Floor** pode ser recuperada ao fechar o contorno se houver um único perímetro identificável. Divisões manuais continuam protegidas.
 
 ### FZM Builder 5.1.18
 

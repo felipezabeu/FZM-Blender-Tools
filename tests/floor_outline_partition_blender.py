@@ -171,13 +171,13 @@ if case=='overlap':
     print('PASS',case); sys.exit(0)
 if case=='nested-first':
     other=next(obj for obj in floors() if obj!=root)
-    inner_mesh=other.data
     custom=bpy.data.materials.new('Existing independent finish')
     other.data.materials.append(custom)
     run(root)
-    assert len(floors())==2 and other in floors() and other.data==inner_mesh
+    assert len(floors())==2 and other in floors()
     assert other.material_slots[0].material==custom and other.get(regions.ROOT)==root
     assert owners(1.5,1.5)==[other] and owners(3.5,2.5)==[root]
+    assert not owners(1.05,1.5), "Nested slab and surrounding hole leave the wall footprint free."
     print('PASS',case,'independent Add Floor room adopted without duplicate slabs'); sys.exit(0)
 
 old_key=root.as_pointer()
