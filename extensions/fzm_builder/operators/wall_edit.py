@@ -196,3 +196,5 @@ class SceneGraph:
             context.view_layer.update()
             raise
         save_legacy_bindings(bindings)
+        from .finishes import refresh_attached_baseboards
+        return refresh_attached_baseboards(context)

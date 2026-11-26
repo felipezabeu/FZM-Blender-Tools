@@ -209,22 +209,25 @@ def _paint_plan(host,cut):
     return result
 
 
-def _refresh_trims(context, head, tail):
+def _refresh_trims(context, head, tail, branch):
     from . import finishes
     for item in context.scene.objects:
         if item.get(finishes.BASEBOARD) and _editable(item,context.scene):
             refs = finishes._wall_refs(item,context.scene)
             if head in refs and (item.get('wall_source') or 'SELECTED') == 'SELECTED':
                 finishes._save_wall_refs(item,refs|{tail})
-    return finishes.refresh_wall_baseboards(context,(head,tail))
+    return finishes.refresh_wall_baseboards(context,(head,tail)) + finishes.refresh_attached_baseboards(
+        context, (branch,) if branch else ())
 
 
 def divide_wall(context, objects):
-    from . import room_paint, shower_area
+    from . import finishes, room_paint, shower_area
     from .floor_regions import (apply_wall_division_bindings, plan_wall_division_bindings,
                                 restore_wall_division_bindings)
     host,branch,cut = find_division(context,objects)
     head = host.obj
+    if finishes.wall_trim_children(head):
+        raise ValueError("Remove Wall Baseboards from the long wall before dividing it, then reapply to both halves.")
     if head.get(shower_area.WALL_DIVIDERS) or any(
             o.get(shower_area.AREA) and head in o.get(shower_area.SOURCE,{}).values()
             for o in context.scene.objects):
@@ -321,7 +324,7 @@ def divide_wall(context, objects):
     for material in {source for _,source,_,_ in paint}:
         room_paint.dispose(material)
     context.view_layer.update()
-    return tail,branch.obj,_refresh_trims(context,head,tail)
+    return tail,branch.obj,_refresh_trims(context,head,tail,branch.obj)
 
 
 def _selected_walls(context):

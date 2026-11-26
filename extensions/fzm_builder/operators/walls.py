@@ -2015,6 +2015,9 @@ class home_builder_walls_OT_wall_prompts(bpy.types.Operator):
         return wm.invoke_props_dialog(self, width=400)
 
     def execute(self, context):
+        from .finishes import refresh_attached_baseboards
+        for warning in refresh_attached_baseboards(context):
+            self.report({'WARNING'}, warning)
         return {'FINISHED'}
 
     def get_first_wall_bp(self,context,obj):
@@ -2820,6 +2823,9 @@ class home_builder_walls_OT_update_wall_thickness(bpy.types.Operator):
                 wall.set_input('Thickness', units.inch(0.75))
             count += 1
 
+        from .finishes import refresh_attached_baseboards
+        for warning in refresh_attached_baseboards(context):
+            self.report({'WARNING'}, warning)
         self.report({'INFO'}, f"Updated thickness on {count} {wall_type} wall(s)")
         return {'FINISHED'}
 
