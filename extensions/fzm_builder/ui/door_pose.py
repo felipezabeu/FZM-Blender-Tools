@@ -109,6 +109,9 @@ def _anchor(context, cage):
     # The control remains accessible with the leaf open, including a fully
     # slid pocket leaf that is hidden behind the wall.
     center = cage.matrix_world @ Vector((w*.5,d*.5,h*.79))
+    clip = rv3d.perspective_matrix @ Vector((*center, 1.))
+    if clip.w <= EPS or not (-clip.w <= clip.z <= clip.w):
+        return None
     p = location_3d_to_region_2d(region,rv3d,center)
     if p is None or not (-1 < p.x < region.width and -1 < p.y < region.height):
         return None
@@ -133,7 +136,8 @@ class FZM_GGT_door_pose(bpy.types.GizmoGroup):
     bl_label = 'Door Open / Close'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'WINDOW'
-    bl_options = {'PERSISTENT'}
+    # These handles use region pixels; SCALE bypasses world/depth scaling.
+    bl_options = {'PERSISTENT', 'SCALE'}
 
     @classmethod
     def poll(cls,context):

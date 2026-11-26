@@ -1294,7 +1294,7 @@ def _opening_baseboards_need_refresh(door, cage, width, height, offset):
 
 
 def _apply_hinged_door(door, *, width=None, height=None, offset=None, enabled=None,
-                       style=None, pose=None, hand=None, direction=None, context=None, report=None):
+                       style=None, pose=None, hand=None, direction=None, hardware=None, hardware_finish=None, context=None, report=None):
     cage = hb_types.GeoNodeCage(door)
     w = cage.get_input('Dim X') if width is None else width
     h = cage.get_input('Dim Z') if height is None else height
@@ -1308,12 +1308,12 @@ def _apply_hinged_door(door, *, width=None, height=None, offset=None, enabled=No
     if offset is not None and not math.isfinite(offset):
         raise ValueError("Use a finite wall offset.")
     swing = hinged_doors.swing_for(door)
-    if not swing and (enabled or hand is not None or direction is not None):
+    if not swing and (enabled or hand is not None or direction is not None or hardware not in (None, 'NONE')):
         raise ValueError("Open doorways do not have hinged leaves.")
     if enabled and (error := hinged_doors.size_error(w,h,bool(swing.get_input('Is Double')))):
         raise ValueError(error)
     if swing:
-        hinged_doors.set_visual(door,enabled,style,pose)
+        hinged_doors.set_visual(door,enabled,style,pose,hardware=hardware,finish=hardware_finish)
         if hand is not None:
             swing.set_input('Is Left',hand == 'LEFT')
         if direction is not None:
@@ -1395,6 +1395,9 @@ class FZM_OT_edit_door(bpy.types.Operator):
     offset: bpy.props.FloatProperty(name='Offset From Wall Start', unit='LENGTH', precision=5)
     show_leaf: bpy.props.BoolProperty(name='Show 3D Leaf')
     leaf_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.STYLES)
+    hardware: bpy.props.EnumProperty(name='Door Hardware', items=hinged_doors.HARDWARE_ITEMS, default='NONE')
+    hardware_finish: bpy.props.EnumProperty(name='Hardware Finish', items=hinged_doors.FINISH_ITEMS,
+                                            default=hinged_doors.DEFAULT_FINISH)
     bypass_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.BYPASS_STYLES)
     opening_amount: bpy.props.FloatProperty(name='Open Amount', min=0., max=1., subtype='FACTOR')
     right_hand: bpy.props.BoolProperty(name='Hinge / Pocket on Right')
@@ -1432,9 +1435,14 @@ class FZM_OT_edit_door(bpy.types.Operator):
                 self.leaf_style = style
         elif swing := hinged_doors.swing_for(door):
             self.show_leaf, self.leaf_style, self.opening_amount = hinged_doors.options(door)
+            self.hardware = hinged_doors.hardware_for(door)
+            self.hardware_finish = hinged_doors.finish_for(door)
             self.hinge_hand = 'LEFT' if swing.get_input('Is Left') else 'RIGHT'
             self.swing_direction = 'INSIDE' if swing.get_input('Swing Inside') else 'OUTSIDE'
         return context.window_manager.invoke_props_dialog(self,width=390)
+
+    def check(self, context):
+        return True  # Refresh visible fields after changing the leaf or hardware choice.
 
     def draw(self, context):
         door = native_doors.cage_for(context.object)
@@ -1461,6 +1469,9 @@ class FZM_OT_edit_door(bpy.types.Operator):
             layout.prop(self,'show_leaf')
             if self.show_leaf:
                 layout.prop(self,'leaf_style')
+                layout.prop(self,'hardware')
+                if self.hardware != 'NONE':
+                    layout.prop(self,'hardware_finish')
                 layout.prop(self,'opening_amount')
             layout.prop(self,'swing_direction')
             if not swing.get_input('Is Double'):
@@ -1490,6 +1501,7 @@ class FZM_OT_edit_door(bpy.types.Operator):
                                    style=provided('leaf_style'),pose=provided('opening_amount'),
                                    hand=provided('hinge_hand') if swing and not swing.get_input('Is Double') else None,
                                    direction=provided('swing_direction') if swing else None,
+                                   hardware=provided('hardware'),hardware_finish=provided('hardware_finish'),
                                    context=context,report=self.report)
         except (RuntimeError, ValueError, KeyError) as exc:
             self.report({'WARNING'},str(exc))
