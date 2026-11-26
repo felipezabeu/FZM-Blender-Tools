@@ -219,17 +219,14 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
 
     ``level`` is the world Z of the slab top. A normal room ring uses
     ``interior=True``; a room bordering the outside of a cutout ring uses False.
-    For a ring with no safe real door openings the original datum is returned.
+    Even without a door, the slab stops at the actual interior wall faces.
     An opening that crosses a corner or another opening is not partially drawn.
     The caller must check the returned ring for intersections before committing.
     """
     edges=[(w,Vector(a).to_2d(),Vector(b).to_2d()) for w,a,b in edges]
-    datum=[a.copy() for _,a,_ in edges]
     if len(edges)<3:
         raise ValueError('At least three physical wall edges are required.')
     doors=[list(dict.fromkeys(_cuts(w,scene))) for w,_,_ in edges]
-    if not partial and not any(doors):
-        return datum
     world=[_vertices(floor_matrix,a,b) for _,a,b in edges]
     reference=world[0][0]
     space=sum((a-reference).cross(world[(i+1)%len(world)][0]-reference) for i,(a,_) in enumerate(world))
@@ -242,20 +239,14 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
         if not data or (b-a).length<=EPS:
             raise ValueError('A physical wall face could not be resolved for this floor.')
         p,q,depth=data
-        same=min(max((a-p.xy).length,(b-q.xy).length),max((a-q.xy).length,(b-p.xy).length))
-        if partial:
-            axis=(q.xy-p.xy).normalized()
-            # A T junction may lie slightly beyond a partition's short end:
-            # that endpoint was placed against the thick host's actual face.
-            same=max(abs((v-p.xy).cross(axis)) for v in (a,b))
+        axis=(q.xy-p.xy).normalized()
+        same=max(abs((v-p.xy).cross(axis)) for v in (a,b))
         if same>JOINT or abs(p.z-level)>LEVEL:
             raise ValueError('A floor edge is not aligned to its physical host wall.')
         d=(b-a).normalized()
         lines.append(_Line(wall,a,b,d,Vector((-d.y,d.x))*sign,depth))
     candidates=[[(door,item) for door in group if (item:=_opening(line,door,level))]
                 for line,group in zip(lines,doors)]
-    if not partial and not any(candidates):
-        return datum
     nearby=[]
     for obj in scene.objects:
         if (data:=_wall_data(obj)) and abs(data[0].z-level)<=LEVEL:
@@ -281,8 +272,6 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
                 continue
             good.append((obj,item))
         accepted.append(good)
-    if not partial and not any(accepted):
-        return datum
     joins=[_physical_joint(p,c) for p,c in zip(lines[-1:]+lines[:-1],lines)]
     result=[]
     def append(p):

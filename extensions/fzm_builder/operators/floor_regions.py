@@ -149,7 +149,7 @@ def area_at_origin(ring):
     return area([p-ring[0] for p in ring])
 
 
-def _closed_components(walls):
+def _closed_components(walls, *, physical_contacts=False):
     """Endpoint graph; ignore loose chains and don't guess junctions or wall crossings."""
     if not walls:
         return
@@ -164,12 +164,25 @@ def _closed_components(walls):
 
     cells = defaultdict(list)
     from math import floor
+    reach = .6 if physical_contacts else outlines.CLOSE
+
+    def joined(i,j):
+        if i//2 == j//2 or not outlines._within(points[i],points[j],reach):
+            return False
+        if outlines._within(points[i],points[j],outlines.CLOSE):
+            return True
+        first,second = walls[i//2],walls[j//2]
+        return outlines._touched_joint(
+            (first.obj,points[i^1],points[i],first.level),
+            (second.obj,points[j],points[j^1],second.level),
+        ) is not None
+
     for i,p in enumerate(points):
-        x,y = [floor(v/outlines.CLOSE) for v in p]
+        x,y = [floor(v/reach) for v in p]
         for dx in (-1,0,1):
             for dy in (-1,0,1):
                 for j in cells[x+dx,y+dy]:
-                    if outlines._within(p,points[j],outlines.CLOSE):
+                    if joined(i,j):
                         representatives[find(i)] = find(j)
         cells[x,y].append(i)
 
@@ -428,8 +441,10 @@ def _adopt_independent_rooms(context, known, plan, inverse, level):
                 continue
             existing = [(inverse @ matrix @ Vector((*p,top))).xy for p in poly]
             source = outlines._new_outline(hosts,inverse,level)
-            if not outlines._same_ring(source,node.ring,outlines.CLOSE) or not outlines._same_ring(
-                    existing,node.ring,outlines.CLOSE):
+            expected = outlines._physical_ring(hosts,source,inverse.inverted(),level,context.scene)
+            if not outlines._same_ring(source,node.ring,outlines.CLOSE) or not (
+                    outlines._same_ring(existing,node.ring,outlines.CLOSE)
+                    or outlines._same_ring(existing,expected,outlines.CLOSE)):
                 continue
         except (ValueError, TypeError, RuntimeError):
             continue

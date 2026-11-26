@@ -99,17 +99,14 @@ def _store(floor, hosts, poly):
 
 
 def remember_created_floor(floor, walls, *, bounds=False):
-    # Classify bounding boxes but never turn the temporary Add Floor fallback
-    # into a guessed closed room. Existing Add Floor geometry is untouched.
-    if bounds:
-        floor[KIND] = BOUNDS
-        return
     try:
         poly, *_ = floor_divider.top_outline(floor.data)
     except ValueError:
         return
-    if len(walls) >= 3:
+    if bounds or len(walls) >= 3:
         _store(floor, [(obj, False) for obj in walls], poly)
+    if bounds:
+        floor[KIND] = BOUNDS
 
 
 def mark_divided(*floors):
@@ -194,6 +191,52 @@ def _validate_ring(poly):
                 raise ValueError('The wall loop crosses itself; the floor was not changed.')
 
 
+CONTACT = .001
+
+
+def _touched_joint(first, second):
+    """Resolve a corner only where the two actual wall footprints touch."""
+    from .wall_baseboard import footprint
+    from .baseboard_perimeter import intersection
+    from .wall_baseboard import normal
+
+    wa,a,b,_ = first
+    wb,c,d,_ = second
+    if _within(b,c,CLOSE):
+        return c
+    try:
+        one,_ = footprint(wa)
+        two,_ = footprint(wb)
+    except ValueError:
+        return None
+
+    # Separating axes for convex footprints, including the true angled caps.
+    # A real open gap must not get a slab across it.
+    for corners,other in ((one,two),(two,one)):
+        for i,p in enumerate(corners):
+            if min((q-p).dot(normal(corners,i)) for q in other) > CONTACT:
+                return None
+    delta, other = b-a, d-c
+    delta.normalize()
+    other.normalize()
+    if abs(delta.cross(other)) < .12:
+        return None
+    joint = intersection(b,delta,c,other)
+    reach_a = min(.6,max((p-b).length for p in sorted(two,key=lambda p:(p-c).length)[:2])+CLOSE)
+    reach_b = min(.6,max((p-c).length for p in sorted(one,key=lambda p:(p-b).length)[:2])+CLOSE)
+    if joint is None or (joint-b).length>reach_a or (joint-c).length>reach_b:
+        return None
+    # A contact at some unrelated point on long intersecting walls is not
+    # enough. At least one selected endpoint must actually touch its neighbor.
+    def touches(p,corners):
+        return all((p-v).dot(normal(corners,i)) <= CONTACT for i,v in enumerate(corners))
+    if not (touches(b,two) or touches(c,one)):
+        return None
+    if (joint-a).dot(delta) <= CLOSE or (d-joint).dot(other) <= CLOSE:
+        return None
+    return joint
+
+
 def _new_outline(hosts, inverse, level):
     if len(hosts) < 3 or len({w for w,_ in hosts}) != len(hosts):
         raise ValueError('The saved floor perimeter needs at least three distinct walls.')
@@ -202,14 +245,17 @@ def _new_outline(hosts, inverse, level):
         edge = wall_edge(obj)
         if edge is None:
             raise ValueError('A source wall is missing or no longer a compatible physical wall.')
-        if edges and abs(edge.level-edges[0][2]) > LEVEL_EPS:
+        if edges and abs(edge.level-edges[0][3]) > LEVEL_EPS:
             raise ValueError('The source walls no longer have the same base level.')
         a,b = (edge.end,edge.start) if rev else (edge.start,edge.end)
-        edges.append((a,b,edge.level))
-    for (_,b,_), (c,_,_) in zip(edges, edges[1:] + edges[:1]):
-        if not _within(b,c,CLOSE):
-            raise ValueError('The source walls no longer form a closed perimeter; the floor was not changed.')
-    poly = [(inverse @ Vector((*a,level))).xy for a,_,_ in edges]
+        edges.append((obj,a,b,edge.level))
+    joints = []
+    for previous,current in zip(edges[-1:]+edges[:-1],edges):
+        point = _touched_joint(previous,current)
+        if point is None:
+            raise ValueError(f'{previous[0].name} and {current[0].name} do not close the floor perimeter. Snap the wall ends together; the floor was not changed.')
+        joints.append(point)
+    poly = [(inverse @ Vector((*p,level))).xy for p in joints]
     _validate_ring(poly)
     return poly
 
@@ -239,6 +285,39 @@ def _read_saved_host(floor, scene, current_poly):
     if not hosts or any(not obj or obj.name not in scene.objects for obj,_ in hosts):
         raise ValueError('A saved source wall was removed from this scene; the floor was not changed.')
     return hosts
+
+
+def _bounds_hosts(floor, scene, current, inverse, level, walls):
+    """Recover the original rectangle only after a proven wall perimeter."""
+    if HOSTS in floor:
+        return _read_saved_host(floor, scene, current)
+    # Older releases didn't record the walls on fallback rectangles. Require
+    # one uniquely matching extrema envelope rather than guessing a room.
+    from .floor_regions import _closed_components
+    if len(current) != 4 or any(
+            min(abs((a-b).x),abs((a-b).y)) > SHAPE_EPS
+            for a,b in zip(current,current[1:]+current[:1])):
+        raise ValueError('This bounding-box floor has been edited. No floor was changed.')
+    def bounds(ring):
+        return tuple(fn(p[i] for p in ring) for i in (0,1) for fn in (min,max))
+    wanted = bounds(current)
+    choices = []
+    for hosts in _closed_components([w for w in walls if abs(w.level-level)<=LEVEL_EPS],
+                                    physical_contacts=True):
+        try:
+            layout = _new_outline(hosts,inverse,level)
+        except ValueError:
+            continue
+        from .floor_thresholds import _wall_data
+        widths = [data[2].length for obj,_ in hosts if (data:=_wall_data(obj))]
+        # Older rectangles have only extrema (not a wall list). Permit at
+        # most a narrow, wall-width-based difference after a physical snap.
+        tolerance = max(CLOSE, min(.075,.45*max(widths,default=0.)))
+        if all(abs(a-b)<=tolerance for a,b in zip(wanted,bounds(layout))):
+            choices.append(hosts)
+    if len(choices) != 1:
+        raise ValueError('No unique closed wall perimeter matches this temporary floor. Close the wall loop first.')
+    return choices[0]
 
 
 def _uv_layers(mesh):
@@ -358,15 +437,15 @@ def update_floor_outline(context, floor):
         return floor_regions.update_family(context,floor)
     if mode == DIVIDED:
         raise ValueError('This floor was divided. Update is disabled to preserve its divider.')
-    if mode == BOUNDS:
-        raise ValueError('This is an open-layout bounding-box floor, not a closed wall loop.')
-    if mode not in (None,LINKED):
+    if mode not in (None,LINKED,BOUNDS):
         raise ValueError('This floor has an unsupported layout source.')
     current,top,base,idx = _supported_mesh(floor)
     matrix,inverse,level = floor_plane(floor,top)
     walls = [edge for obj in context.view_layer.objects if (edge:=wall_edge(obj))]
     if mode == LINKED:
         hosts = _read_saved_host(floor,context.scene,current)
+    elif mode == BOUNDS:
+        hosts = _bounds_hosts(floor,context.scene,current,inverse,level,walls)
     else:
         hosts = _legacy_hosts(floor,current,top,walls)
     poly = _new_outline(hosts,inverse,level)
@@ -375,6 +454,8 @@ def update_floor_outline(context, floor):
         return floor_regions.update_family(context,floor,initial=(hosts,poly,plan))
     warnings = []
     poly = _physical_ring(hosts,poly,matrix,level,context.scene,warnings=warnings)
+    if mode == BOUNDS:
+        floor_regions._assert_other_slabs_clear(context,{floor},[[poly]],inverse,level)
     from .finishes import refresh_floor_baseboards
     if _same_ring(current,poly):
         _store(floor,hosts,current)
