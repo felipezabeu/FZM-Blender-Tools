@@ -88,6 +88,8 @@ def test(tmp):
     assert g.bl_space_type=='VIEW_3D' and g.bl_region_type=='WINDOW'
     assert helper.open_button.properties.icon=='PLAY'
     assert helper.close_button.properties.icon=='LOOP_BACK'
+    assert 'SCALE' in g.bl_options and '3D' not in g.bl_options
+    assert helper.open_button.scale_basis == helper.close_button.scale_basis == 17.
     icon_rna=bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon']
     assert all(k in icon_rna.enum_items for k in ('PLAY','LOOP_BACK'))
     cuts=[(m.name,m.object) for m in w.modifiers if m.type=='BOOLEAN']
