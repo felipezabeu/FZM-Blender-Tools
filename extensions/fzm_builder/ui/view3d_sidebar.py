@@ -310,6 +310,10 @@ class HOME_BUILDER_PT_room_layout_walls(bpy.types.Panel):
         row.scale_y = 1.3
         row.operator('home_builder_walls.draw_walls', text="Draw Walls", icon='GREASEPENCIL')
         row.prop(hb_scene, 'wall_type', text="")
+        active = context.active_object
+        if active and active.get('IS_WALL_BP'):
+            layout.operator('fzm_builder.edit_wall', text='Move Entire Wall', icon='HAND')
+
         
         col = layout.column()
         col.use_property_split = True

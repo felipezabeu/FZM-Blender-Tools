@@ -4,7 +4,7 @@ from . import hb_project
 from . import hb_props_obstacles
 from . import ops
 from .ui import view3d_sidebar
-from .ui import door_pose, menu_apend
+from .ui import door_pose, menu_apend, wall_edit
 from .ui import menus
 from .operators import walls
 from .operators import finishes
@@ -213,6 +213,7 @@ def register():
     details.register()
     doors_windows.register()
     door_pose.register()
+    wall_edit.register()
     export.register()
     ops_stairs.register()
     ops.register()
@@ -246,6 +247,7 @@ def unregister():
     layouts.unregister()
     rooms.unregister()
     details.unregister()
+    wall_edit.unregister()
     door_pose.unregister()
     doors_windows.unregister()
     export.unregister()

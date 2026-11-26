@@ -1255,6 +1255,7 @@ class home_builder_walls_OT_draw_walls(bpy.types.Operator, hb_placement.Placemen
             connect_location = Vector((start.x, start.y, 0))
             # Position our wall at the start point
             self.current_wall.obj.location = connect_location
+            self.current_wall.obj['FZM_WALL_START_PEER'] = existing_wall.obj
         
         self.start_point = connect_location
         self.has_start_point = True
