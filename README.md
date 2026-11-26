@@ -7,8 +7,16 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 | Extensão | Versão | Função |
 |---|---:|---|
 | FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
-| FZM Builder | 5.1.16 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.18 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.18
+
+- Para pôr rodapé em uma parede solta, selecione a parede e use **Add Baseboards → Selected Walls** ou o botão direito → **Add/Edit Wall Baseboards**. Não precisa selecionar o piso nem fechar o ambiente.
+- Escolha **Side 1**, **Side 2** ou **Both Sides**. **Wrap Free Ends** cobre a espessura na ponta livre, sem avançar em uma parede conectada. O rodapé para na guarnição da porta e não passa pelo revestimento que chega até o piso.
+- **Automatic** continua cuidando do perímetro do ambiente. Em um T, interrompe o rodapé onde a divisória entra no cômodo. O modo manual de perímetro fechado passou a se chamar **Selected Perimeter**.
+- Os perfis **Colonial** e **Step Bevel** agora são diferentes para rodapé e guarnição. Nas duas guarnições, a borda fina fica voltada para o vão. Para atualizar uma peça já salva, reaplique **Add Baseboards** ou **Door Casing**; abrir o projeto não muda as peças existentes.
+- Se for usar **Divide Wall** numa parede longa com rodapé aplicado diretamente, remova esse rodapé antes e reaplique nas duas partes depois de dividir.
 
 ### FZM Builder 5.1.16
 

@@ -69,6 +69,8 @@ class HOME_BUILDER_MT_wall_commands(bpy.types.Menu):
         layout.operator("home_builder_walls.isolate_selected_walls", text="Isolate Selected Walls", icon='ZOOM_SELECTED')
         layout.operator("home_builder_walls.show_all_walls", text="Show All Walls", icon='HIDE_OFF')
         layout.separator()
+        layout.operator("fzm_builder.room_baseboards", text="Add/Edit Wall Baseboards",
+                        icon="MOD_SOLIDIFY").wall_source = 'WALL_FACES'
         layout.operator("fzm_builder.divide_wall", icon="MOD_BOOLEAN")
         layout.operator("home_builder_walls.draw_wall_cutter", text="Draw Wall Cutter", icon='MOD_BOOLEAN')
         layout.separator()

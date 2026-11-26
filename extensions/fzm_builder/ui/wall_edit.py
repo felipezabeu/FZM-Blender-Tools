@@ -206,11 +206,13 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             plan = model.checked_plan(wall, self.edit_mode, dx, dy)
             if not plan:
                 return {'CANCELLED'}
-            model.commit(context, plan)
+            warnings = model.commit(context, plan) or []
         except (AttributeError, KeyError, ValueError, TypeError, RuntimeError) as error:
             self.report({'WARNING'}, str(error))
             return {'CANCELLED'}
-        self.report({'INFO'}, f'{len(plan)} wall(s) updated. Regenerate existing floor finishes, trims or shower lining as needed.')
+        for warning in warnings:
+            self.report({'WARNING'}, f'Could not refresh wall baseboards: {warning}')
+        self.report({'INFO'}, f'{len(plan)} wall(s) updated. Regenerate existing floors or wall tile lining as needed.')
         return {'FINISHED'}
 
     def execute(self, context):
