@@ -1,0 +1,1690 @@
+import bpy
+import gpu
+import blf
+from gpu_extras.batch import batch_for_shader
+from bpy_extras import view3d_utils
+from .. import hb_types, hb_snap, hb_placement, units
+import math
+from mathutils import Vector
+from ..hb_details import GeoNodeText
+from . import finishes, hinged_doors, native_doors, window_content
+
+# Single door swing options: (label, {geo node inputs})
+SINGLE_DOOR_SWINGS = [
+    ('Inside Left',   {'Swing Inside': True,  'Is Left': True,  'Is Double': False}),
+    ('Inside Right',  {'Swing Inside': True,  'Is Left': False, 'Is Double': False}),
+    ('Outside Left',  {'Swing Inside': False, 'Is Left': True,  'Is Double': False}),
+    ('Outside Right', {'Swing Inside': False, 'Is Left': False, 'Is Double': False}),
+]
+
+# Double door swing options: (label, {geo node inputs})
+DOUBLE_DOOR_SWINGS = [
+    ('Inside',  {'Swing Inside': True,  'Is Double': True}),
+    ('Outside', {'Swing Inside': False, 'Is Double': True}),
+]
+
+
+def _draw_placement_dim_text(x, y, text, color):
+    """Draw centered text at screen position for placement dimensions."""
+    font_id = 0
+    blf.size(font_id, 13)
+    blf.color(font_id, *color)
+    w, h = blf.dimensions(font_id, text)
+    blf.position(font_id, x - w / 2, y - h / 2, 0)
+    blf.draw(font_id, text)
+
+
+def _draw_placement_dimensions(op):
+    """GPU draw callback: renders placement preview dimensions for door/window placement.
+    Reads live state from the operator every frame."""
+    if not getattr(op, '_dims_visible', False):
+        return
+    wall_obj = getattr(op, 'selected_wall', None)
+    if wall_obj is None:
+        return
+    try:
+        if wall_obj.name not in bpy.data.objects:
+            return
+    except (ReferenceError, AttributeError):
+        return
+
+    region = getattr(op, 'region', None)
+    if region is None:
+        return
+    rv3d = region.data
+    if rv3d is None:
+        return
+
+    placed = op.get_placed_object()
+    if placed is None:
+        return
+
+    obj_height = op.get_placed_object_height()
+    placement_x = op.placement_x
+    gap_left = op.gap_left_boundary
+    gap_right = op.gap_right_boundary
+    z_offset = op.get_two_point_z_offset(bpy.context)
+    hide_total = bool(getattr(op, '_hide_total_width_dim', False))
+    # In phase 1 of two-point mode the cursor is a single point, not yet
+    # a region — treat width as 0 so left/right offsets measure from cursor.
+    obj_width = 0.0 if hide_total else op.get_placed_object_width()
+
+    wall = hb_types.GeoNodeWall(wall_obj)
+    # Applied walls are no longer parametric - skip dimension drawing.
+    if not wall.has_modifier():
+        return
+    wall_thickness = wall.get_input('Thickness')
+
+    # Wall coordinate system in world space (XY plane)
+    wm = wall_obj.matrix_world
+    wall_dir = Vector((wm[0][0], wm[1][0])).normalized()
+    wall_perp = Vector((wm[0][1], wm[1][1])).normalized()
+    wall_origin_2d = Vector((wm[0][3], wm[1][3]))
+
+    # Z position for dim drawing: centered on the placed object
+    dim_z_world = wm[2][3] + z_offset + obj_height / 2
+
+    # Front face of the wall (so dims sit just outside the wall body)
+    front_offset = wall_thickness
+
+    def world_pt(local_x):
+        base_2d = wall_origin_2d + wall_dir * local_x + wall_perp * front_offset
+        return Vector((base_2d.x, base_2d.y, dim_z_world))
+
+    placed_left_x = placement_x
+    placed_right_x = placement_x + obj_width
+
+    pt_gap_left = world_pt(gap_left)
+    pt_placed_left = world_pt(placed_left_x)
+    pt_placed_right = world_pt(placed_right_x)
+    pt_gap_right = world_pt(gap_right)
+
+    def proj(p):
+        return view3d_utils.location_3d_to_region_2d(region, rv3d, p)
+
+    s_gap_left = proj(pt_gap_left)
+    s_placed_left = proj(pt_placed_left)
+    s_placed_right = proj(pt_placed_right)
+    s_gap_right = proj(pt_gap_right)
+
+    if any(s is None for s in (s_gap_left, s_placed_left, s_placed_right, s_gap_right)):
+        return
+
+    # Perpendicular offset direction in screen space, away from the wall body
+    face_vec = s_gap_right - s_gap_left
+    if face_vec.length < 2:
+        return
+    face_dir_n = face_vec.normalized()
+    offset_dir = Vector((-face_dir_n.y, face_dir_n.x))
+
+    # Flip offset_dir if needed so it points away from wall mid-line
+    wall_mid_world = Vector((
+        wall_origin_2d.x + wall_perp.x * (wall_thickness / 2),
+        wall_origin_2d.y + wall_perp.y * (wall_thickness / 2),
+        dim_z_world,
+    ))
+    wall_mid_screen = proj(wall_mid_world)
+    if wall_mid_screen is not None:
+        face_mid_screen = (s_gap_left + s_gap_right) / 2
+        if (wall_mid_screen - face_mid_screen).dot(offset_dir) > 0:
+            offset_dir = -offset_dir
+
+    offset_px = 20
+    tick_half = 5
+    dim_color = (0.0, 0.85, 1.0, 0.85)
+    leader_color = (0.0, 0.85, 1.0, 0.3)
+
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    tick_dir = Vector((-offset_dir.y, offset_dir.x))
+    unit_settings = bpy.context.scene.unit_settings
+
+    # Build dim segment list: (distance_meters, screen_from, screen_to)
+    segments = []
+    left_dist = placed_left_x - gap_left
+    right_dist = gap_right - placed_right_x
+    width_dist = obj_width
+
+    if left_dist > units.inch(0.5):
+        segments.append((left_dist, s_gap_left, s_placed_left))
+    if not hide_total and width_dist > units.inch(0.5):
+        segments.append((width_dist, s_placed_left, s_placed_right))
+    if right_dist > units.inch(0.5):
+        segments.append((right_dist, s_placed_right, s_gap_right))
+
+    gpu.state.blend_set('ALPHA')
+
+    for dist, p_from, p_to in segments:
+        a = p_from + offset_dir * offset_px
+        b = p_to + offset_dir * offset_px
+
+        shader.bind()
+
+        # Leader lines (faint)
+        gpu.state.line_width_set(1.0)
+        shader.uniform_float("color", leader_color)
+        for fp, dp in [(p_from, a), (p_to, b)]:
+            batch = batch_for_shader(shader, 'LINES', {"pos": [(fp.x, fp.y), (dp.x, dp.y)]})
+            batch.draw(shader)
+
+        # Dim line
+        gpu.state.line_width_set(1.5)
+        shader.uniform_float("color", dim_color)
+        batch = batch_for_shader(shader, 'LINES', {"pos": [(a.x, a.y), (b.x, b.y)]})
+        batch.draw(shader)
+
+        # Tick marks
+        for p in [a, b]:
+            t1 = p + tick_dir * tick_half
+            t2 = p - tick_dir * tick_half
+            batch = batch_for_shader(shader, 'LINES', {"pos": [(t1.x, t1.y), (t2.x, t2.y)]})
+            batch.draw(shader)
+
+        # Text label
+        mid = (a + b) / 2 + offset_dir * 12
+        text = units.unit_to_string(unit_settings, dist)
+        _draw_placement_dim_text(mid.x, mid.y, text, dim_color)
+
+    gpu.state.line_width_set(1.0)
+    gpu.state.blend_set('NONE')
+
+
+class WallObjectPlacementMixin(hb_placement.PlacementMixin):
+    """
+    Extended placement mixin for objects placed on walls (doors, windows, cabinets).
+    Adds support for left/right offset and width input.
+    """
+    
+    # Track which direction offset is measured from
+    offset_from_right: bool = False
+    
+    # Track if user has explicitly set position (don't follow mouse)
+    position_locked: bool = False
+    
+    # Wall context
+    selected_wall = None
+    wall_length: float = 0
+    placement_x: float = 0
+    
+    # Gap boundaries for offset calculations
+    gap_left_boundary: float = 0
+    gap_right_boundary: float = 0
+    
+    # Placement dimensions GPU draw state
+    _dim_draw_handle = None
+    _dims_visible = False
+    _hide_total_width_dim = False
+
+    
+    def get_view_distance(self, context):
+        """Get the current view distance for scaling UI elements."""
+        try:
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            return space.region_3d.view_distance
+        except:
+            pass
+        return 10.0
+    
+    def create_placement_dimensions(self):
+        """Register a GPU draw handler for placement preview dimensions.
+        Replaces the legacy GeoNodeDimension scene-object approach."""
+        self._dim_draw_handle = None
+        self._dims_visible = False
+        self._hide_total_width_dim = False
+        self._dim_draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_placement_dimensions, (self,), 'WINDOW', 'POST_PIXEL')
+
+    def update_placement_dimensions(self, context, obj_width, obj_height, wall_thickness, z_offset=0):
+        """Mark dimensions as visible. The GPU draw handler reads live state
+        from the operator every frame, so the obj_width / obj_height /
+        wall_thickness / z_offset arguments are unused — preserved for
+        API compatibility with the legacy implementation and with callers."""
+        self._dims_visible = True
+        self._hide_total_width_dim = False
+
+    def hide_placement_dimensions(self):
+        """Hide all placement dimensions."""
+        self._dims_visible = False
+
+    def delete_placement_dimensions(self):
+        """Remove the GPU draw handler."""
+        if getattr(self, '_dim_draw_handle', None) is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self._dim_draw_handle, 'WINDOW')
+            except (ValueError, RuntimeError):
+                pass
+            self._dim_draw_handle = None
+        self._dims_visible = False
+
+    
+    def get_placed_object(self):
+        """Override this to return the object being placed."""
+        raise NotImplementedError
+    
+    def get_placed_object_width(self) -> float:
+        """Override this to return the width of the object being placed."""
+        raise NotImplementedError
+    
+    def set_placed_object_width(self, width: float):
+        """Override this to set the width of the object being placed."""
+        raise NotImplementedError
+    
+    def get_default_typing_target(self):
+        """Default to width when user starts typing numbers."""
+        return hb_placement.TypingTarget.WIDTH
+    
+    def handle_typing_event(self, event) -> bool:
+        """Extended to handle arrow keys and W for switching input mode.
+        
+        Workflow: type 30 → left arrow → type 5 → Enter
+        = set width to 30", then place 5" from left edge.
+        
+        Switching modes (arrow keys, W, H) applies the current value
+        first, then clears and starts the new input mode.
+        """
+        
+        if event.value == 'PRESS':
+            # Left arrow - apply current value, switch to offset from left
+            if event.type == 'LEFT_ARROW':
+                self.offset_from_right = False
+                if self.placement_state == hb_placement.PlacementState.TYPING and self.typed_value:
+                    self.apply_typed_value()
+                self.start_typing(hb_placement.TypingTarget.OFFSET_X)
+                return True
+            
+            # Right arrow - apply current value, switch to offset from right
+            if event.type == 'RIGHT_ARROW':
+                self.offset_from_right = True
+                if self.placement_state == hb_placement.PlacementState.TYPING and self.typed_value:
+                    self.apply_typed_value()
+                self.start_typing(hb_placement.TypingTarget.OFFSET_RIGHT)
+                return True
+            
+            # W - apply current value, switch to width
+            if event.type == 'W':
+                if self.placement_state == hb_placement.PlacementState.TYPING and self.typed_value:
+                    self.apply_typed_value()
+                self.start_typing(hb_placement.TypingTarget.WIDTH)
+                return True
+            
+            # H - apply current value, switch to height
+            if event.type == 'H':
+                if self.placement_state == hb_placement.PlacementState.TYPING and self.typed_value:
+                    self.apply_typed_value()
+                self.start_typing(hb_placement.TypingTarget.HEIGHT)
+                return True
+        
+        # Fall back to base typing handler
+        return super().handle_typing_event(event)
+    
+    def apply_typed_value(self):
+        """Apply typed value based on current target."""
+        parsed = self.parse_typed_distance()
+        if parsed is None:
+            self.stop_typing()
+            return
+        
+        obj = self.get_placed_object()
+        if not obj:
+            self.stop_typing()
+            return
+            
+        if self.typing_target == hb_placement.TypingTarget.OFFSET_X:
+            # Offset from left
+            self.placement_x = parsed
+            obj.location.x = parsed
+            self.offset_from_right = False
+            self.position_locked = True  # Lock position after explicit input
+            
+        elif self.typing_target == hb_placement.TypingTarget.OFFSET_RIGHT:
+            # Offset from right - calculate X from right edge
+            if self.selected_wall:
+                obj_width = self.get_placed_object_width()
+                self.placement_x = self.wall_length - parsed - obj_width
+                obj.location.x = self.placement_x
+            self.offset_from_right = True
+            self.position_locked = True  # Lock position after explicit input
+            
+        elif self.typing_target == hb_placement.TypingTarget.WIDTH:
+            self.set_placed_object_width(parsed)
+            # Recalculate position if offset from right
+            if self.offset_from_right and self.selected_wall:
+                # Keep right edge in same place
+                self.update_position_for_width_change()
+                
+        elif self.typing_target == hb_placement.TypingTarget.HEIGHT:
+            self.set_placed_object_height(parsed)
+        
+        self.stop_typing()
+    
+    def set_placed_object_height(self, height: float):
+        """Override this to set height. Default does nothing."""
+        pass
+
+    def get_placed_object_height(self) -> float:
+        """Override to return the placed object's height (Z dim)."""
+        return 0.0
+
+    def set_placed_object_depth(self, depth: float):
+        """Override to set the placed object's depth (Y dim, matched to wall thickness)."""
+        pass
+
+    def get_two_point_z_offset(self, context) -> float:
+        """Override to return the placement Z offset.
+        Default 0 (doors). Windows override to props.window_height_from_floor."""
+        return 0.0
+
+    def update_position_for_width_change(self):
+        """Recalculate X position after width change when offset from right."""
+        pass
+    
+    def on_typed_value_changed(self):
+        """Update preview as user types."""
+        if not self.typed_value:
+            return
+            
+        parsed = self.parse_typed_distance()
+        if parsed is None:
+            return
+            
+        obj = self.get_placed_object()
+        if not obj:
+            return
+        
+        if self.typing_target == hb_placement.TypingTarget.OFFSET_X:
+            self.placement_x = parsed
+            obj.location.x = parsed
+            
+        elif self.typing_target == hb_placement.TypingTarget.OFFSET_RIGHT:
+            if self.selected_wall:
+                obj_width = self.get_placed_object_width()
+                self.placement_x = self.wall_length - parsed - obj_width
+                obj.location.x = self.placement_x
+                
+        elif self.typing_target == hb_placement.TypingTarget.WIDTH:
+            self.set_placed_object_width(parsed)
+            
+        elif self.typing_target == hb_placement.TypingTarget.HEIGHT:
+            self.set_placed_object_height(parsed)
+        
+        # Refresh dimensions after value change
+        self.refresh_placement_dimensions()
+    
+    def refresh_placement_dimensions(self):
+        """Override in subclass to refresh dimensions after typing changes."""
+        pass
+    
+    def get_offset_display(self, context) -> str:
+        """Get formatted offset string showing distance from appropriate edge."""
+        unit_settings = context.scene.unit_settings
+        obj_width = self.get_placed_object_width()
+        
+        if self.offset_from_right:
+            offset_from_right = self.wall_length - self.placement_x - obj_width
+            return f"Offset (→): {units.unit_to_string(unit_settings, offset_from_right)}"
+        else:
+            return f"Offset (←): {units.unit_to_string(unit_settings, self.placement_x)}"
+    
+    def cut_wall(self, wall_obj, cutting_obj):
+        """Add a boolean modifier to the wall to cut a hole for the door/window."""
+        # Create a unique modifier name based on the cutting object
+        mod_name = f"Boolean_{cutting_obj.name}"
+        
+        # The window (or door) may have been renamed since its Boolean
+        # was created. Names can be reused; only reuse the same cutter.
+        for existing in wall_obj.modifiers:
+            if (existing.type == 'BOOLEAN' and existing.operation == 'DIFFERENCE'
+                    and existing.object == cutting_obj):
+                return existing
+        
+        # Add boolean modifier
+        mod = wall_obj.modifiers.new(name=mod_name, type='BOOLEAN')
+        mod.operation = 'DIFFERENCE'
+        mod.object = cutting_obj
+        mod.solver = 'EXACT'
+        
+        # Hide the cutting object from render
+        cutting_obj.hide_render = True
+        
+        return mod
+
+    def find_nearest_wall_to_cursor(self, threshold=0.3):
+        """Find the closest wall to the current hit location in 2D plan-view
+        distance. Used as a fallback when the raycast misses a wall directly,
+        which gives placement a softer "snap zone" around each wall and
+        eliminates jitter at the wall's edge.
+
+        Returns the wall BP object or None.
+        """
+        if not self.hit_location:
+            return None
+        cursor_xy = Vector((self.hit_location[0], self.hit_location[1]))
+        best_wall = None
+        best_dist = threshold
+        placed = self.get_placed_object()
+        for obj in bpy.context.view_layer.objects:
+            if 'IS_WALL_BP' not in obj:
+                continue
+            wall = hb_types.GeoNodeWall(obj)
+            if not wall.has_modifier():
+                continue
+            wall_length = wall.get_input('Length')
+            wm = obj.matrix_world
+            wall_origin = Vector((wm[0][3], wm[1][3]))
+            wall_dir_2d = Vector((wm[0][0], wm[1][0]))
+            if wall_dir_2d.length < 0.0001:
+                continue
+            wall_dir_2d.normalize()
+            # Project cursor onto wall's local X axis, clamped to wall length
+            to_cursor = cursor_xy - wall_origin
+            along = to_cursor.dot(wall_dir_2d)
+            along_clamped = max(0.0, min(wall_length, along))
+            closest = wall_origin + wall_dir_2d * along_clamped
+            dist = (cursor_xy - closest).length
+            if dist < best_dist:
+                best_dist = dist
+                best_wall = obj
+        return best_wall
+
+    # ========== Two-Point Width Mode (D key) ==========
+
+    def init_two_point_state(self):
+        """Initialize two-point width mode state. Call from execute()."""
+        self.define_width_mode = False
+        self.width_start_set = False
+        self.width_start_x = 0.0
+        self.width_start_wall = None
+        self.width_start_gap = (0.0, 0.0)
+        self.last_width_direction = 1
+        self.width_locked_in_phase2 = False
+
+    def two_point_in_phase1(self) -> bool:
+        return self.define_width_mode and not self.width_start_set
+
+    def two_point_in_phase2(self) -> bool:
+        return self.define_width_mode and self.width_start_set
+
+    def update_two_point_phase2_position(self, context):
+        """Position the placed object using a captured start point + cursor/typed end."""
+        if not self.selected_wall:
+            return
+        placed = self.get_placed_object()
+        if placed is None:
+            return
+
+        wall = hb_types.GeoNodeWall(self.selected_wall)
+        self.wall_length = wall.get_input('Length')
+        wall_thickness = wall.get_input('Thickness')
+        obj_height = self.get_placed_object_height()
+        z_offset = self.get_two_point_z_offset(context)
+
+        # Cursor in wall-local X
+        world_loc = Vector(self.hit_location)
+        local_loc = self.selected_wall.matrix_world.inverted() @ world_loc
+        cursor_x = local_loc.x
+
+        # Direction follows cursor relative to start
+        delta = cursor_x - self.width_start_x
+        if abs(delta) > 0.001:
+            self.last_width_direction = 1 if delta > 0 else -1
+
+        # Width: cursor-driven unless typed value locked it
+        if self.width_locked_in_phase2:
+            width = self.get_placed_object_width()
+        else:
+            width = abs(delta)
+            width = hb_snap.snap_value_to_grid(width)
+            if width < 0.001:
+                width = 0.001
+            self.set_placed_object_width(width)
+
+        gap_start, gap_end = self.width_start_gap
+        max_width = max(0.0, gap_end - gap_start)
+        if width > max_width:
+            width = max_width
+            self.set_placed_object_width(width)
+
+        if self.last_width_direction > 0:
+            snap_x = self.width_start_x
+        else:
+            snap_x = self.width_start_x - width
+        snap_x = max(gap_start, min(snap_x, gap_end - width))
+
+        self.placement_x = snap_x
+        self.gap_left_boundary = gap_start
+        self.gap_right_boundary = gap_end
+
+        placed.parent = self.selected_wall
+        placed.location.x = snap_x
+        placed.location.y = 0
+        placed.location.z = z_offset
+        placed.rotation_euler = (0, 0, 0)
+        self.set_placed_object_depth(wall_thickness)
+
+        self.update_placement_dimensions(
+            context, width, obj_height, wall_thickness, z_offset)
+
+    def update_two_point_phase1_dimensions(self, context):
+        """Show gap-relative offset dims at the cursor while picking the start point.
+        The placed object itself stays hidden — caller is responsible for that."""
+        placed = self.get_placed_object()
+        if not self.selected_wall or placed is None:
+            self.hide_placement_dimensions()
+            return
+
+        wall = hb_types.GeoNodeWall(self.selected_wall)
+        self.wall_length = wall.get_input('Length')
+        wall_thickness = wall.get_input('Thickness')
+        obj_height = self.get_placed_object_height()
+        z_offset = self.get_two_point_z_offset(context)
+
+        world_loc = Vector(self.hit_location)
+        local_loc = self.selected_wall.matrix_world.inverted() @ world_loc
+        cursor_x = hb_snap.snap_value_to_grid(local_loc.x)
+
+        gap_start, gap_end, _ = self.find_placement_gap(
+            self.selected_wall, cursor_x, 0.0, exclude_obj=placed)
+        cursor_x = max(gap_start, min(cursor_x, gap_end))
+
+        self.placement_x = cursor_x
+        self.gap_left_boundary = gap_start
+        self.gap_right_boundary = gap_end
+
+        # Reuse update_placement_dimensions to mark dims visible, then set
+        # the hide-total-width flag so the GPU draw handler skips the total
+        # width segment (we only want left/right offsets in phase 1).
+        self.update_placement_dimensions(
+            context, 0.0, obj_height, wall_thickness, z_offset)
+        self._hide_total_width_dim = True
+
+    def handle_two_point_phase1_click(self) -> bool:
+        """Capture the start point on a left click in phase 1.
+        Returns True if the click was consumed (caller should not place)."""
+        if not self.two_point_in_phase1():
+            return False
+        if not self.selected_wall:
+            return False
+        placed = self.get_placed_object()
+        if placed is None:
+            return False
+        world_loc = Vector(self.hit_location)
+        local_loc = self.selected_wall.matrix_world.inverted() @ world_loc
+        start_x = hb_snap.snap_value_to_grid(local_loc.x)
+        gap_start, gap_end, _ = self.find_placement_gap(
+            self.selected_wall, start_x, 0.0, exclude_obj=placed)
+        start_x = max(gap_start, min(start_x, gap_end))
+        self.width_start_x = start_x
+        self.width_start_wall = self.selected_wall
+        self.width_start_gap = (gap_start, gap_end)
+        self.width_start_set = True
+        self.width_locked_in_phase2 = False
+        self.last_width_direction = 1
+        return True
+
+    def handle_two_point_rmb_undo(self, event) -> bool:
+        """Right-click in phase 2 = soft undo (re-pick start). Returns True if handled."""
+        if (event.type == 'RIGHTMOUSE' and event.value == 'PRESS'
+                and self.two_point_in_phase2()):
+            self.width_start_set = False
+            self.width_start_wall = None
+            self.width_locked_in_phase2 = False
+            return True
+        return False
+
+    def handle_two_point_d_key(self, event) -> bool:
+        """D key toggles two-point width mode. Returns True if handled."""
+        if event.type == 'D' and event.value == 'PRESS':
+            if self.placement_state != hb_placement.PlacementState.TYPING:
+                self.define_width_mode = not self.define_width_mode
+                if not self.define_width_mode:
+                    self.width_start_set = False
+                    self.width_start_wall = None
+                    self.width_locked_in_phase2 = False
+                return True
+        return False
+
+    def maybe_lock_typed_width(self, was_typing_width: bool):
+        """Call after handle_typing_event consumed an event. If the user just
+        finished typing a WIDTH value while in phase 2, lock the width so the
+        cursor only controls direction, not magnitude."""
+        if (was_typing_width
+                and self.placement_state != hb_placement.PlacementState.TYPING
+                and self.two_point_in_phase2()):
+            self.width_locked_in_phase2 = True
+
+    # ========== End Two-Point Width Mode ==========
+
+
+class _PlaceWallObjectBase(bpy.types.Operator, WallObjectPlacementMixin):
+    """Base class for door/window placement operators.
+
+    Not registered. Subclasses configure per-type behavior via class
+    attributes; the base class implements the entire modal flow.
+    """
+    bl_options = {'UNDO'}
+
+    # ===== Per-type configuration (override in subclasses) =====
+    OBJECT_NAME = "Object"           # passed to GeoNodeCage.create()
+    OBJECT_LABEL = "object"          # human label for headers/messages
+    BP_FLAG = ""                     # 'IS_ENTRY_DOOR_BP' / 'IS_WINDOW_BP'
+    MENU_ID = ""                     # menu shown when clicking the placed object
+    WIDTH_PROP_NAME = ""             # 'door_single_width' / 'window_width' / etc.
+    HEIGHT_PROP_NAME = ""            # 'door_height' / 'window_height'
+    Z_OFFSET_PROP_NAME = None        # None = floor-anchored, else home_builder prop name
+    TEXT_KIND = "DOOR"               # GeoNodeText kind: 'DOOR' or 'WINDOW'
+    TEXT_NAME = "Object Text"        # GeoNodeText object name
+    HAS_SWING = False                # True for single/double door
+    SWING_LIST = None                # SINGLE_DOOR_SWINGS / DOUBLE_DOOR_SWINGS / None
+    INITIAL_SWING_INPUTS = None      # dict of initial inputs to set on the swing object
+    RESET_Z_WHEN_FREE = True         # set z=0 when off-wall (False for window)
+
+    # ===== Abstract method implementations (mixin protocol) =====
+
+    def get_placed_object(self):
+        return self.placed_obj.obj if self.placed_obj else None
+
+    def get_placed_object_width(self) -> float:
+        if self.placed_obj:
+            return self.placed_obj.get_input('Dim X')
+        return 0.0
+
+    def set_placed_object_width(self, width: float):
+        if self.placed_obj:
+            self.placed_obj.set_input('Dim X', width)
+
+    def get_placed_object_height(self) -> float:
+        if self.placed_obj:
+            return self.placed_obj.get_input('Dim Z')
+        return 0.0
+
+    def set_placed_object_height(self, height: float):
+        if self.placed_obj:
+            self.placed_obj.set_input('Dim Z', height)
+
+    def set_placed_object_depth(self, depth: float):
+        if self.placed_obj:
+            self.placed_obj.set_input('Dim Y', depth)
+
+    def get_two_point_z_offset(self, context) -> float:
+        if self.Z_OFFSET_PROP_NAME:
+            return getattr(context.scene.home_builder, self.Z_OFFSET_PROP_NAME)
+        return 0.0
+
+    # ===== Door swing (no-ops if HAS_SWING is False) =====
+
+    def apply_door_swing_type(self):
+        if not self.HAS_SWING or not self.swing_obj:
+            return
+        swing_label, inputs = self.SWING_LIST[self.door_swing_index]
+        for input_name, value in inputs.items():
+            self.swing_obj.set_input(input_name, value)
+
+    def cycle_door_swing(self, direction: int):
+        if not self.HAS_SWING:
+            return
+        self.door_swing_index = (self.door_swing_index + direction) % len(self.SWING_LIST)
+        self.apply_door_swing_type()
+
+    # ===== Object creation =====
+
+    def create_placed_object(self, context):
+        """Create the placed object: cage + text + optional swing annotation."""
+        props = context.scene.home_builder
+        hb_wm = bpy.context.window_manager.home_builder
+        add_on_prefs = hb_wm.get_user_preferences(bpy.context)
+
+        self.placed_obj = hb_types.GeoNodeCage()
+        self.placed_obj.create(self.OBJECT_NAME)
+        if self.BP_FLAG:
+            self.placed_obj.obj[self.BP_FLAG] = True
+        if self.MENU_ID:
+            self.placed_obj.obj['MENU_ID'] = self.MENU_ID
+        self.placed_obj.set_input('Dim X', getattr(props, self.WIDTH_PROP_NAME))
+        self.placed_obj.set_input('Dim Y', props.wall_thickness)
+        self.placed_obj.set_input('Dim Z', getattr(props, self.HEIGHT_PROP_NAME))
+        self.placed_obj.obj.color = add_on_prefs.door_window_color
+        if props.show_entry_door_and_window_cages:
+            self.placed_obj.obj.display_type = 'TEXTURED'
+            self.placed_obj.obj.show_in_front = True
+        else:
+            self.placed_obj.obj.display_type = 'WIRE'
+
+        dim_x = self.placed_obj.var_input('Dim X', 'dim_x')
+        dim_y = self.placed_obj.var_input('Dim Y', 'dim_y')
+        dim_z = self.placed_obj.var_input('Dim Z', 'dim_z')
+
+        # Optional swing annotation (door subclasses only)
+        self.swing_obj = None
+        if self.HAS_SWING:
+            self.swing_obj = hb_types.GeoNodeDoorSwing()
+            self.swing_obj.create('Door Swing Annotation')
+            self.swing_obj.obj['FZM_DOOR_SWING'] = True
+            self.swing_obj.obj.parent = self.placed_obj.obj
+            self.swing_obj.driver_input("Dim X", 'dim_x', [dim_x])
+            self.swing_obj.driver_input("Dim Y", 'dim_y', [dim_y])
+            if self.INITIAL_SWING_INPUTS:
+                for k, v in self.INITIAL_SWING_INPUTS.items():
+                    self.swing_obj.set_input(k, v)
+
+        # Text annotation
+        text = GeoNodeText()
+        text.create(self.TEXT_NAME, self.TEXT_KIND, props.annotation_text_size)
+        text.obj.parent = self.placed_obj.obj
+        text.obj.rotation_euler.x = math.radians(90)
+        text.driver_location("x", 'dim_x/2', [dim_x])
+        text.driver_location("y", 'dim_y/2', [dim_y])
+        text.driver_location("z", 'dim_z/2', [dim_z])
+        text.set_alignment('CENTER', 'CENTER')
+
+        self.register_placement_object(self.placed_obj.obj)
+        self.create_placement_dimensions()
+
+    # ===== Position helpers =====
+
+    def set_position_on_wall(self):
+        if not self.selected_wall or not self.placed_obj:
+            return
+
+        # Two-point width mode, phase 2: anchored to a captured start point
+        if self.two_point_in_phase2() and self.width_start_wall is not None:
+            if self.width_start_wall.name in bpy.data.objects:
+                self.selected_wall = self.width_start_wall
+                self.update_two_point_phase2_position(bpy.context)
+                return
+            self.width_start_set = False
+            self.width_start_wall = None
+            self.width_locked_in_phase2 = False
+
+        wall = hb_types.GeoNodeWall(self.selected_wall)
+        self.wall_length = wall.get_input('Length')
+        wall_thickness = wall.get_input('Thickness')
+        obj_width = self.get_placed_object_width()
+        obj_height = self.get_placed_object_height()
+        z_offset = self.get_two_point_z_offset(bpy.context)
+
+        world_loc = Vector(self.hit_location)
+        local_loc = self.selected_wall.matrix_world.inverted() @ world_loc
+        cursor_x = local_loc.x
+
+        gap_start, gap_end, snap_x = self.find_placement_gap(
+            self.selected_wall, cursor_x, obj_width,
+            exclude_obj=self.placed_obj.obj
+        )
+        self.gap_left_boundary = gap_start
+        self.gap_right_boundary = gap_end
+
+        snap_x = hb_snap.snap_value_to_grid(snap_x)
+        snap_x = max(0, min(snap_x, self.wall_length - obj_width))
+        self.placement_x = snap_x
+
+        self.placed_obj.obj.parent = self.selected_wall
+        self.placed_obj.obj.location.x = snap_x
+        self.placed_obj.obj.location.y = 0
+        self.placed_obj.obj.location.z = z_offset
+        self.placed_obj.obj.rotation_euler = (0, 0, 0)
+        self.placed_obj.set_input("Dim Y", wall_thickness)
+
+        self.update_placement_dimensions(
+            bpy.context, obj_width, obj_height, wall_thickness, z_offset)
+
+    def set_position_free(self):
+        if self.placed_obj and self.hit_location:
+            self.placed_obj.obj.parent = None
+            self.placed_obj.obj.location = hb_snap.snap_vector_to_grid(Vector(self.hit_location))
+            if self.RESET_Z_WHEN_FREE:
+                self.placed_obj.obj.location.z = 0
+        self.hide_placement_dimensions()
+
+    def refresh_placement_dimensions(self):
+        if self.selected_wall and self.placed_obj:
+            wall = hb_types.GeoNodeWall(self.selected_wall)
+            wall_thickness = wall.get_input('Thickness')
+            obj_width = self.get_placed_object_width()
+            obj_height = self.get_placed_object_height()
+            z_offset = self.get_two_point_z_offset(bpy.context)
+            self.update_placement_dimensions(
+                bpy.context, obj_width, obj_height, wall_thickness, z_offset)
+
+    # ===== Header text =====
+
+    def update_header(self, context):
+        mode_tag = " [2-Point]" if self.define_width_mode else ""
+        swing_label = ""
+        if self.HAS_SWING and self.SWING_LIST:
+            swing_label = self.SWING_LIST[self.door_swing_index][0]
+        swing_text = f" | Swing: {swing_label}" if swing_label else ""
+        swing_keys = " | \u2191/\u2193 swing" if self.HAS_SWING else ""
+        label = self.OBJECT_LABEL
+
+        if self.placement_state == hb_placement.PlacementState.TYPING:
+            target_name = {
+                hb_placement.TypingTarget.OFFSET_X: "Offset (\u2190)",
+                hb_placement.TypingTarget.OFFSET_RIGHT: "Offset (\u2192)",
+                hb_placement.TypingTarget.WIDTH: "Width",
+                hb_placement.TypingTarget.HEIGHT: "Height",
+            }.get(self.typing_target, "Value")
+            text = f"{target_name}: {self.typed_value}_{swing_text} | Enter to confirm | W width | H height | Esc cancel{mode_tag}"
+        elif self.two_point_in_phase2():
+            width_str = units.unit_to_string(context.scene.unit_settings, self.get_placed_object_width())
+            lock_hint = " [W locked]" if self.width_locked_in_phase2 else ""
+            text = f"{mode_tag} Click end point | Width: {width_str}{lock_hint}{swing_text} | W: type width | Right-click: re-pick start | D: exit 2-point | Esc cancel"
+        elif self.two_point_in_phase1():
+            text = f"{mode_tag} Click start point on wall{swing_text} | W: type width | D: exit 2-point | Esc cancel"
+        elif self.selected_wall:
+            offset_str = self.get_offset_display(context)
+            width_str = units.unit_to_string(context.scene.unit_settings, self.get_placed_object_width())
+            text = f"{offset_str} | Width: {width_str}{swing_text}{swing_keys} | \u2190/\u2192 offset | W width | D: 2-point width | Click to place | Esc cancel"
+        else:
+            text = f"Move over a wall to place {label}{swing_keys} | D: 2-point width | Esc to cancel"
+
+        hb_placement.draw_header_text(context, text)
+
+    # ===== Operator lifecycle =====
+
+    def finish_wall_opening(self, wall_obj):
+        """Finalize through the same wall cutter used by legacy doors/windows."""
+        door = self.placed_obj.obj
+        self.cut_wall(wall_obj, door)
+        if self.HAS_SWING and (swing := hinged_doors.swing_for(door)):
+            error = hinged_doors.size_error(self.placed_obj.get_input('Dim X'), self.placed_obj.get_input('Dim Z'),
+                                            bool(swing.get_input('Is Double')))
+            if not error:
+                try:
+                    hinged_doors.set_visual(door, True, native_doors.STYLE_FLAT, 0.)
+                except (RuntimeError, ValueError, KeyError) as exc:
+                    self.report({'WARNING'}, f"Opening placed; cannot display 3D leaf: {exc}")
+        if door.get('IS_ENTRY_DOOR_BP'):
+            finishes.refresh_opening_baseboards(bpy.context, (door,), self.report)
+        return True
+
+    def snap_candidates_to_hide(self):
+        return (self.placed_obj.obj,)
+
+    def execute(self, context):
+        self.init_placement(context)
+
+        self.placed_obj = None
+        self.swing_obj = None
+        self.door_swing_index = 0
+        self.selected_wall = None
+        self.wall_length = 0
+        self.placement_x = 0
+        self.offset_from_right = False
+        self.position_locked = False
+
+        self.init_two_point_state()
+
+        self.create_placed_object(context)
+
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        context.window.cursor_set('CROSSHAIR')
+
+        if event.type == "INBETWEEN_MOUSEMOVE":
+            return {'RUNNING_MODAL'}
+
+        # Up/Down arrow - cycle door swing type (only if HAS_SWING)
+        if self.HAS_SWING and event.type in {'UP_ARROW', 'DOWN_ARROW'} and event.value == 'PRESS':
+            direction = 1 if event.type == 'UP_ARROW' else -1
+            self.cycle_door_swing(direction)
+            self.update_header(context)
+            return {'RUNNING_MODAL'}
+
+        # Let mixin handle typing events first; detect finish-of-WIDTH-typing
+        # to lock the typed width during two-point phase 2.
+        was_typing_width = (
+            self.placement_state == hb_placement.PlacementState.TYPING
+            and self.typing_target == hb_placement.TypingTarget.WIDTH
+        )
+        if self.handle_typing_event(event):
+            self.maybe_lock_typed_width(was_typing_width)
+            self.update_header(context)
+            return {'RUNNING_MODAL'}
+
+        # Update snap (hide placed object during raycast)
+        snap_previews = self.snap_candidates_to_hide()
+        try:
+            for obj in snap_previews:
+                obj.hide_set(True)
+            self.update_snap(context, event)
+        finally:
+            for obj in snap_previews:
+                obj.hide_set(False)
+
+        # Check if we're over a wall
+        self.selected_wall = None
+        if self.hit_object and 'IS_WALL_BP' in self.hit_object:
+            # Only accept the wall if its geo node modifier still exists.
+            # Applied walls are static meshes and cannot host doors/windows
+            # parametrically.
+            candidate = hb_types.GeoNodeWall(self.hit_object)
+            if candidate.has_modifier():
+                self.selected_wall = self.hit_object
+                self.wall_length = candidate.get_input('Length')
+        else:
+            # 2D proximity fallback: if the raycast missed a wall, snap to the
+            # nearest wall in plan-view distance. Eliminates jitter at the
+            # wall's edge where the raycast may flicker between wall/floor.
+            nearby_wall = self.find_nearest_wall_to_cursor()
+            if nearby_wall is not None:
+                candidate = hb_types.GeoNodeWall(nearby_wall)
+                if candidate.has_modifier():
+                    self.selected_wall = nearby_wall
+                    self.wall_length = candidate.get_input('Length')
+
+        # Two-point phase 2: pin the wall to the captured start wall so the
+        # placed object stays anchored even if the cursor wanders off the wall.
+        if self.two_point_in_phase2() and self.width_start_wall is not None:
+            if self.width_start_wall.name in bpy.data.objects:
+                candidate = hb_types.GeoNodeWall(self.width_start_wall)
+                if candidate.has_modifier():
+                    self.selected_wall = self.width_start_wall
+                    self.wall_length = candidate.get_input('Length')
+
+        # Two-point phase 1: hide the object so the user picks a clean start,
+        # but still show the gap-relative offset dimensions.
+        in_phase1 = self.two_point_in_phase1()
+        if in_phase1:
+            for obj in self.snap_candidates_to_hide():
+                obj.hide_set(True)
+            self.update_two_point_phase1_dimensions(context)
+
+        typing_offset = (self.placement_state == hb_placement.PlacementState.TYPING
+                         and self.typing_target in (hb_placement.TypingTarget.OFFSET_X,
+                                                    hb_placement.TypingTarget.OFFSET_RIGHT))
+        if not typing_offset and not self.position_locked and not in_phase1:
+            if self.selected_wall:
+                self.set_position_on_wall()
+            else:
+                self.set_position_free()
+                self.position_locked = False
+
+        self.update_header(context)
+
+        # Left click - place (or capture start point in two-point phase 1)
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if self.selected_wall:
+                if self.handle_two_point_phase1_click():
+                    return {'RUNNING_MODAL'}
+                if not self.finish_wall_opening(self.selected_wall):
+                    return {'RUNNING_MODAL'}
+                if self.placed_obj.obj in self.placement_objects:
+                    self.placement_objects.remove(self.placed_obj.obj)
+                self.delete_placement_dimensions()
+                hb_placement.clear_header_text(context)
+                context.window.cursor_set('DEFAULT')
+                return {'FINISHED'}
+            else:
+                self.report({'WARNING'}, f"{self.OBJECT_LABEL.capitalize()} must be placed on a wall")
+                return {'RUNNING_MODAL'}
+
+        # Right click in two-point phase 2 = soft undo
+        if self.handle_two_point_rmb_undo(event):
+            self.update_header(context)
+            return {'RUNNING_MODAL'}
+
+        if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
+            self.delete_placement_dimensions()
+            self.cancel_placement(context)
+            hb_placement.clear_header_text(context)
+            return {'CANCELLED'}
+
+        # D key toggles two-point width mode
+        if self.handle_two_point_d_key(event):
+            self.update_header(context)
+            return {'RUNNING_MODAL'}
+
+        if hb_snap.event_is_pass_through(event):
+            return {'PASS_THROUGH'}
+
+        return {'RUNNING_MODAL'}
+
+
+class home_builder_doors_windows_OT_place_door(_PlaceWallObjectBase):
+    bl_idname = "home_builder_doors_windows.place_door"
+    bl_label = "Place Door"
+    bl_description = "Place a door on a wall. Arrow keys for offset direction, W for width, Up/Down for swing type, Escape to cancel"
+
+    OBJECT_NAME = "Door"
+    OBJECT_LABEL = "door"
+    BP_FLAG = "IS_ENTRY_DOOR_BP"
+    MENU_ID = "HOME_BUILDER_MT_door_commands"
+    WIDTH_PROP_NAME = "door_single_width"
+    HEIGHT_PROP_NAME = "door_height"
+    TEXT_KIND = "DOOR"
+    TEXT_NAME = "Door Text"
+    HAS_SWING = True
+    SWING_LIST = SINGLE_DOOR_SWINGS
+
+
+class home_builder_doors_windows_OT_place_double_door(_PlaceWallObjectBase):
+    bl_idname = "home_builder_doors_windows.place_double_door"
+    bl_label = "Place Double Door"
+    bl_description = "Place a double door on a wall. Arrow keys for offset direction, W for width, Up/Down for swing type, Escape to cancel"
+
+    OBJECT_NAME = "Double Door"
+    OBJECT_LABEL = "double door"
+    BP_FLAG = "IS_ENTRY_DOOR_BP"
+    MENU_ID = "HOME_BUILDER_MT_door_commands"
+    WIDTH_PROP_NAME = "door_double_width"
+    HEIGHT_PROP_NAME = "door_height"
+    TEXT_KIND = "DOOR"
+    TEXT_NAME = "Door Text"
+    HAS_SWING = True
+    SWING_LIST = DOUBLE_DOOR_SWINGS
+    INITIAL_SWING_INPUTS = {'Is Double': True, 'Swing Inside': True}
+
+
+class home_builder_doors_windows_OT_place_open_door(_PlaceWallObjectBase):
+    bl_idname = "home_builder_doors_windows.place_open_door"
+    bl_label = "Place Open Door"
+    bl_description = "Place an open doorway on a wall. Arrow keys for offset direction, W for width, Escape to cancel"
+
+    OBJECT_NAME = "Open Door"
+    OBJECT_LABEL = "open door"
+    BP_FLAG = "IS_ENTRY_DOOR_BP"
+    MENU_ID = "HOME_BUILDER_MT_door_commands"
+    WIDTH_PROP_NAME = "door_single_width"
+    HEIGHT_PROP_NAME = "door_height"
+    TEXT_KIND = "DOOR"
+    TEXT_NAME = "Door Text"
+
+
+def _native_dimensions_changed(op, context):
+    number = {'TYPICAL': 0, 'NARROW': 1, 'WIDE_ALT': 2}.get(op.size_preset)
+    if number is not None:
+        op.opening_width, op.opening_height = native_doors.default_size(op.door_type, number)
+
+
+class FZM_OT_place_native_door(_PlaceWallObjectBase):
+    bl_idname = "fzm_builder.place_native_door"
+    bl_label = "Sliding, Bifold or Pocket Door"
+    bl_description = "Choose a native door type, style and opening size, then place it on a wall"
+
+    OBJECT_NAME = "Native Door"
+    OBJECT_LABEL = "door"
+    BP_FLAG = "IS_ENTRY_DOOR_BP"
+    MENU_ID = "HOME_BUILDER_MT_door_commands"
+    WIDTH_PROP_NAME = "door_single_width"
+    HEIGHT_PROP_NAME = "door_height"
+    TEXT_NAME = "Door Text"
+
+    door_type: bpy.props.EnumProperty(name="Door Type", items=native_doors.DOOR_TYPES,
+        update=_native_dimensions_changed)
+    size_preset: bpy.props.EnumProperty(name="Opening Size", items=(
+        ('TYPICAL', "Typical", "Typical nominal opening"),
+        ('NARROW', "Alternate 1", "Alternate nominal opening"),
+        ('WIDE_ALT', "Alternate 2", "Alternate nominal opening"),
+        ('CUSTOM', "Custom", "Enter any suitable opening size"),
+    ), update=_native_dimensions_changed)
+    opening_width: bpy.props.FloatProperty(name="Width", unit='LENGTH', default=1.524, min=.01)
+    opening_height: bpy.props.FloatProperty(name="Height", unit='LENGTH', default=2.032, min=.01)
+    leaf_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.STYLES)
+    bypass_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.BYPASS_STYLES)
+    right_hand: bpy.props.BoolProperty(name="Hinge / Pocket on Right", default=False)
+    opening_amount: bpy.props.FloatProperty(name="Open Amount", min=0, max=1, subtype='FACTOR')
+
+    @classmethod
+    def poll(cls, context):
+        return context.area is not None and context.area.type == 'VIEW_3D' and context.mode == 'OBJECT'
+
+    def invoke(self, context, event):
+        _native_dimensions_changed(self, context)
+        return context.window_manager.invoke_props_dialog(self, width=390)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, 'door_type')
+        layout.prop(self, 'bypass_style' if self.door_type == 'BYPASS' else 'leaf_style')
+        layout.prop(self, 'size_preset')
+        if self.size_preset != 'CUSTOM':
+            width = units.unit_to_string(context.scene.unit_settings, self.opening_width)
+            height = units.unit_to_string(context.scene.unit_settings, self.opening_height)
+            layout.label(text=f'{width} × {height}')
+        else:
+            layout.prop(self, 'opening_width')
+            layout.prop(self, 'opening_height')
+        layout.prop(self, 'opening_amount')
+        if self.door_type != 'BYPASS':
+            layout.prop(self, 'right_hand')
+
+    def create_placed_object(self, context):
+        _PlaceWallObjectBase.create_placed_object(self, context)
+        cage = self.placed_obj.obj
+        cage.name = native_doors.NAMES[self.door_type]
+        cage.display_type = 'WIRE'
+        cage.show_in_front = False
+        self.placed_obj.set_input('Dim X', self.opening_width)
+        self.placed_obj.set_input('Dim Z', self.opening_height)
+        style = self.bypass_style if self.door_type == 'BYPASS' else self.leaf_style
+        self.door_visual = native_doors.create_visual(
+            self.placed_obj, self.door_type, style, self.opening_amount, self.right_hand)
+
+    def snap_candidates_to_hide(self):
+        return (self.placed_obj.obj, self.door_visual)
+
+    def finish_wall_opening(self, wall_obj):
+        cage = self.placed_obj.obj
+        error = native_doors.size_error(cage, self.door_type, self.right_hand,
+            self.placed_obj.get_input('Dim X'), self.placed_obj.get_input('Dim Z'))
+        if error:
+            self.report({'WARNING'}, error)
+            return False
+        return _PlaceWallObjectBase.finish_wall_opening(self, wall_obj)
+
+
+def _apply_native_door(door, width, height, offset, style, pose, right, *, context=None, report=None):
+    kind = door[native_doors.TYPE_KEY]
+    if not math.isfinite(offset):
+        raise ValueError("Use a finite wall offset.")
+    if error := native_doors.size_error(door, kind, right, width, height, offset):
+        raise ValueError(error)
+    cage = hb_types.GeoNodeCage(door)
+    changed = _opening_baseboards_need_refresh(door, cage, width, height, offset)
+    native_doors.set_options(native_doors.visual_for(door), style, pose, right)
+    cage.set_input('Dim X', width)
+    cage.set_input('Dim Z', height)
+    door.location.x = offset
+    door.update_tag()
+    if changed and context is not None:
+        finishes.refresh_opening_baseboards(context, (door,), report)
+
+
+class FZM_OT_edit_native_door(bpy.types.Operator):
+    bl_idname = "fzm_builder.edit_native_door"
+    bl_label = "Native Door Settings"
+    bl_description = "Edit the opening size, leaf style and pose of a placed door"
+    bl_options = {'UNDO'}
+
+    opening_width: bpy.props.FloatProperty(name="Width", unit='LENGTH', min=.01)
+    opening_height: bpy.props.FloatProperty(name="Height", unit='LENGTH', min=.01)
+    offset: bpy.props.FloatProperty(name="Offset From Wall Start", unit='LENGTH', min=0.)
+    leaf_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.STYLES)
+    bypass_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.BYPASS_STYLES)
+    right_hand: bpy.props.BoolProperty(name="Hinge / Pocket on Right", default=False)
+    opening_amount: bpy.props.FloatProperty(name="Open Amount", min=0, max=1, subtype='FACTOR')
+
+    @classmethod
+    def poll(cls, context):
+        door = native_doors.cage_for(context.object)
+        return door is not None and bool(door.get(native_doors.TYPE_KEY)) and bool(native_doors.visual_for(door))
+
+    def invoke(self, context, event):
+        door = native_doors.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(door)
+        self.opening_width = cage.get_input('Dim X')
+        self.opening_height = cage.get_input('Dim Z')
+        self.offset = door.location.x
+        style, self.opening_amount, self.right_hand = native_doors.get_options(native_doors.visual_for(door))
+        if door[native_doors.TYPE_KEY] == 'BYPASS':
+            self.bypass_style = style
+        else:
+            self.leaf_style = style
+        return context.window_manager.invoke_props_dialog(self, width=390)
+
+    def draw(self, context):
+        layout = self.layout
+        kind = native_doors.cage_for(context.object)[native_doors.TYPE_KEY]
+        layout.label(text=native_doors.NAMES[kind])
+        layout.prop(self, 'bypass_style' if kind == 'BYPASS' else 'leaf_style')
+        layout.prop(self, 'opening_width')
+        layout.prop(self, 'opening_height')
+        layout.prop(self, 'offset')
+        layout.prop(self, 'opening_amount')
+        if kind != 'BYPASS':
+            layout.prop(self, 'right_hand')
+
+    def execute(self, context):
+        door = native_doors.cage_for(context.object)
+        kind = door[native_doors.TYPE_KEY]
+        style = self.bypass_style if kind == 'BYPASS' else self.leaf_style
+        try:
+            _apply_native_door(door, self.opening_width, self.opening_height, self.offset,
+                               style, self.opening_amount, self.right_hand, context=context, report=self.report)
+        except (ValueError, RuntimeError, KeyError) as error:
+            self.report({'WARNING'}, str(error))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class home_builder_doors_windows_OT_place_window(_PlaceWallObjectBase):
+    bl_idname = "home_builder_doors_windows.place_window"
+    bl_label = "Place Window"
+    bl_description = "Place a window on a wall. Arrow keys for offset direction, W for width, Escape to cancel"
+
+    OBJECT_NAME = "Window"
+    OBJECT_LABEL = "window"
+    BP_FLAG = "IS_WINDOW_BP"
+    MENU_ID = "HOME_BUILDER_MT_window_commands"
+    WIDTH_PROP_NAME = "window_width"
+    HEIGHT_PROP_NAME = "window_height"
+    Z_OFFSET_PROP_NAME = "window_height_from_floor"
+    TEXT_KIND = "WINDOW"
+    TEXT_NAME = "Window Text"
+    RESET_Z_WHEN_FREE = False
+
+    add_frame: bpy.props.BoolProperty(
+        name="Show 3D Window", default=False,
+        description="Add a simple frame and glass without changing the wall opening",
+    )
+
+    def finish_wall_opening(self, wall_obj):
+        result = _PlaceWallObjectBase.finish_wall_opening(self, wall_obj)
+        if result and getattr(self, 'add_frame', False):
+            cage = self.placed_obj
+            error = window_content.size_error(*(cage.get_input(k) for k in ('Dim X','Dim Z','Dim Y')))
+            if error is None:
+                try:
+                    window_content.set_visual(cage.obj, True)
+                except (RuntimeError, ValueError, KeyError) as exc:
+                    error = str(exc)
+            if error:
+                self.report({'WARNING'}, f"Opening placed without a 3D window: {error}")
+        return result
+
+
+def _opening_baseboards_need_refresh(door, cage, width, height, offset):
+    return (abs(cage.get_input('Dim X') - width) > 1e-6
+            or abs(cage.get_input('Dim Z') - height) > 1e-6
+            or (offset is not None and abs(door.location.x - offset) > 1e-6))
+
+
+def _apply_hinged_door(door, *, width=None, height=None, offset=None, enabled=None,
+                       style=None, pose=None, hand=None, direction=None, context=None, report=None):
+    cage = hb_types.GeoNodeCage(door)
+    w = cage.get_input('Dim X') if width is None else width
+    h = cage.get_input('Dim Z') if height is None else height
+    changed = _opening_baseboards_need_refresh(door, cage, w, h, offset)
+    old_enabled, old_style, old_pose = hinged_doors.options(door)
+    enabled = old_enabled if enabled is None else enabled
+    style = old_style if style is None else style
+    pose = old_pose if pose is None else pose
+    if not all(math.isfinite(v) and v > 0 for v in (w,h)):
+        raise ValueError("Use positive, finite opening dimensions.")
+    if offset is not None and not math.isfinite(offset):
+        raise ValueError("Use a finite wall offset.")
+    swing = hinged_doors.swing_for(door)
+    if not swing and (enabled or hand is not None or direction is not None):
+        raise ValueError("Open doorways do not have hinged leaves.")
+    if enabled and (error := hinged_doors.size_error(w,h,bool(swing.get_input('Is Double')))):
+        raise ValueError(error)
+    if swing:
+        hinged_doors.set_visual(door,enabled,style,pose)
+        if hand is not None:
+            swing.set_input('Is Left',hand == 'LEFT')
+        if direction is not None:
+            swing.set_input('Swing Inside',direction == 'INSIDE')
+    if width is not None:
+        cage.set_input('Dim X',w)
+    if height is not None:
+        cage.set_input('Dim Z',h)
+    if offset is not None:
+        door.location.x = offset
+    door.update_tag()
+    if changed and context is not None:
+        finishes.refresh_opening_baseboards(context, (door,), report)
+
+
+class home_builder_doors_windows_OT_door_prompts(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.door_prompts"
+    bl_label = "Door Prompts"
+    bl_description = "Edit the opening and the optional 3D leaf of a hinged door"
+    bl_options = {'UNDO'}
+
+    door_width: bpy.props.FloatProperty(name="Width", unit='LENGTH', precision=5, min=.01)
+    door_height: bpy.props.FloatProperty(name="Height", unit='LENGTH', precision=5, min=.01)
+    offset: bpy.props.FloatProperty(name="Offset From Wall Start", unit='LENGTH', precision=5)
+    show_leaf: bpy.props.BoolProperty(name="Show 3D Leaf")
+    leaf_style: bpy.props.EnumProperty(name="Leaf Style", items=native_doors.STYLES)
+    opening_amount: bpy.props.FloatProperty(name="Open Amount", min=0., max=1., subtype='FACTOR')
+
+    @classmethod
+    def poll(cls, context):
+        door = hinged_doors.cage_for(context.object)
+        return bool(door and hb_types.GeoNodeCage(door).has_modifier()
+                    and door.library is None and door.override_library is None)
+
+    def invoke(self, context, event):
+        door = hinged_doors.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(door)
+        self.door_width, self.door_height = cage.get_input('Dim X'), cage.get_input('Dim Z')
+        self.offset = door.location.x
+        self.show_leaf, self.leaf_style, self.opening_amount = hinged_doors.options(door)
+        return context.window_manager.invoke_props_dialog(self,width=385)
+
+    def execute(self, context):
+        door = hinged_doors.cage_for(context.object)
+        def provided(name):
+            return getattr(self,name) if self.properties.is_property_set(name) else None
+        try:
+            _apply_hinged_door(door,width=provided('door_width'),height=provided('door_height'),
+                               offset=provided('offset'),enabled=provided('show_leaf'),
+                               style=provided('leaf_style'),pose=provided('opening_amount'),
+                               context=context,report=self.report)
+        except (RuntimeError, ValueError, KeyError) as exc:
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self,'door_width')
+        layout.prop(self,'door_height')
+        layout.prop(self,'offset')
+        if hinged_doors.swing_for(hinged_doors.cage_for(context.object)):
+            layout.separator()
+            layout.prop(self,'show_leaf')
+            if self.show_leaf:
+                layout.prop(self,'leaf_style')
+                layout.prop(self,'opening_amount')
+
+
+class FZM_OT_edit_door(bpy.types.Operator):
+    """One door dialog for placed native and hinged types; casing remains separate."""
+    bl_idname = 'fzm_builder.edit_door'
+    bl_label = 'Edit Door'
+    bl_description = 'Edit the selected door opening, leaf style and open position'
+    bl_options = {'UNDO'}
+
+    width: bpy.props.FloatProperty(name='Width', unit='LENGTH', precision=5, min=.01)
+    height: bpy.props.FloatProperty(name='Height', unit='LENGTH', precision=5, min=.01)
+    offset: bpy.props.FloatProperty(name='Offset From Wall Start', unit='LENGTH', precision=5)
+    show_leaf: bpy.props.BoolProperty(name='Show 3D Leaf')
+    leaf_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.STYLES)
+    bypass_style: bpy.props.EnumProperty(name='Leaf Style', items=native_doors.BYPASS_STYLES)
+    opening_amount: bpy.props.FloatProperty(name='Open Amount', min=0., max=1., subtype='FACTOR')
+    right_hand: bpy.props.BoolProperty(name='Hinge / Pocket on Right')
+    hinge_hand: bpy.props.EnumProperty(name='Door Hand', items=(
+        ('LEFT','Left','Use the existing left-hand door configuration'),
+        ('RIGHT','Right','Use the existing right-hand door configuration')))
+    swing_direction: bpy.props.EnumProperty(name='Swing Direction', items=(
+        ('INSIDE','Inside','Swing toward the inside of the wall'),
+        ('OUTSIDE','Outside','Swing toward the outside of the wall')))
+
+    @classmethod
+    def poll(cls, context):
+        door = native_doors.cage_for(context.object)
+        if context.mode != 'OBJECT' or not door or door.library or door.override_library:
+            return False
+        cage = hb_types.GeoNodeCage(door)
+        if not cage.has_modifier() or not all(cage.has_input(name) for name in ('Dim X','Dim Z')):
+            return False
+        kind = door.get(native_doors.TYPE_KEY)
+        if kind:
+            visual = native_doors.visual_for(door)
+            return bool(kind in native_doors.NAMES and visual and not visual.library and not visual.override_library)
+        return True
+
+    def invoke(self, context, event):
+        door = native_doors.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(door)
+        self.width, self.height, self.offset = cage.get_input('Dim X'), cage.get_input('Dim Z'), door.location.x
+        kind = door.get(native_doors.TYPE_KEY)
+        if kind:
+            style, self.opening_amount, self.right_hand = native_doors.get_options(native_doors.visual_for(door))
+            if kind == 'BYPASS':
+                self.bypass_style = style
+            else:
+                self.leaf_style = style
+        elif swing := hinged_doors.swing_for(door):
+            self.show_leaf, self.leaf_style, self.opening_amount = hinged_doors.options(door)
+            self.hinge_hand = 'LEFT' if swing.get_input('Is Left') else 'RIGHT'
+            self.swing_direction = 'INSIDE' if swing.get_input('Swing Inside') else 'OUTSIDE'
+        return context.window_manager.invoke_props_dialog(self,width=390)
+
+    def draw(self, context):
+        door = native_doors.cage_for(context.object)
+        layout = self.layout
+        kind = door.get(native_doors.TYPE_KEY)
+        swing = None if kind else hinged_doors.swing_for(door)
+        if kind:
+            title = native_doors.NAMES[kind]
+        elif swing:
+            title = 'Double Door' if swing.get_input('Is Double') else 'Single Door'
+        else:
+            title = 'Open Doorway'
+        layout.label(text=title)
+        for name in ('width','height','offset'):
+            layout.prop(self,name)
+        if kind:
+            layout.separator()
+            layout.prop(self,'bypass_style' if kind == 'BYPASS' else 'leaf_style')
+            layout.prop(self,'opening_amount')
+            if kind != 'BYPASS':
+                layout.prop(self,'right_hand',text='Pocket on Right' if kind == 'POCKET' else 'Hinge on Right')
+        elif swing:
+            layout.separator()
+            layout.prop(self,'show_leaf')
+            if self.show_leaf:
+                layout.prop(self,'leaf_style')
+                layout.prop(self,'opening_amount')
+            layout.prop(self,'swing_direction')
+            if not swing.get_input('Is Double'):
+                layout.prop(self,'hinge_hand')
+        # Door Casing is adjacent in the menu/sidebar because it can affect
+        # multiple selected openings. Confirming this dialog edits only this door.
+
+    def execute(self, context):
+        door = native_doors.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(door)
+        def provided(name, fallback=None):
+            return getattr(self,name) if self.properties.is_property_set(name) else fallback
+        kind = door.get(native_doors.TYPE_KEY)
+        try:
+            if kind:
+                old_style, old_pose, old_right = native_doors.get_options(native_doors.visual_for(door))
+                style_key = 'bypass_style' if kind == 'BYPASS' else 'leaf_style'
+                dims = (provided('width',cage.get_input('Dim X')), provided('height',cage.get_input('Dim Z')),
+                        provided('offset',door.location.x))
+                _apply_native_door(door,*dims,provided(style_key,old_style),
+                                   provided('opening_amount',old_pose),provided('right_hand',old_right),
+                                   context=context,report=self.report)
+            else:
+                swing = hinged_doors.swing_for(door)
+                _apply_hinged_door(door,width=provided('width'),height=provided('height'),
+                                   offset=provided('offset'), enabled=provided('show_leaf'),
+                                   style=provided('leaf_style'),pose=provided('opening_amount'),
+                                   hand=provided('hinge_hand') if swing and not swing.get_input('Is Double') else None,
+                                   direction=provided('swing_direction') if swing else None,
+                                   context=context,report=self.report)
+        except (RuntimeError, ValueError, KeyError) as exc:
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class home_builder_doors_windows_OT_window_prompts(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.window_prompts"
+    bl_label = "Window Prompts"
+    bl_description = "Edit the opening or add/remove its simple 3D frame and glass"
+    bl_options = {'UNDO'}
+
+    window_width: bpy.props.FloatProperty(name="Width", unit='LENGTH', precision=5, min=.001)
+    window_height: bpy.props.FloatProperty(name="Height", unit='LENGTH', precision=5, min=.001)
+    height_from_floor: bpy.props.FloatProperty(name="Height From Floor", unit='LENGTH', precision=5)
+    offset: bpy.props.FloatProperty(name="Location X", unit='LENGTH', precision=5)
+    show_frame: bpy.props.BoolProperty(
+        name="Show 3D Window",
+        description="Add a simple frame and glass; turn off to keep just the wall opening",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = window_content.cage_for(context.object)
+        return bool(obj and obj.library is None and obj.override_library is None
+                    and hb_types.GeoNodeCage(obj).has_modifier())
+
+    def invoke(self, context, event):
+        obj = window_content.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(obj)
+        self.window_width = cage.get_input('Dim X')
+        self.window_height = cage.get_input('Dim Z')
+        self.height_from_floor = obj.location.z
+        self.offset = obj.location.x
+        self.show_frame = bool(window_content.visual_for(obj))
+        return context.window_manager.invoke_props_dialog(self, width=340)
+
+    def execute(self, context):
+        obj = window_content.cage_for(context.object)
+        cage = hb_types.GeoNodeCage(obj)
+        is_set = self.properties.is_property_set
+        width = self.window_width if is_set('window_width') else cage.get_input('Dim X')
+        height = self.window_height if is_set('window_height') else cage.get_input('Dim Z')
+        depth = cage.get_input('Dim Y')
+        error = window_content.size_error(width, height, depth)
+        if any(is_set(k) and not math.isfinite(getattr(self,k)) for k in ('offset','height_from_floor')):
+            error = "Use finite offsets."
+        if error:
+            self.report({'WARNING'}, error)
+            return {'CANCELLED'}
+        try:
+            if is_set('show_frame'):
+                selected_visual = context.object != obj
+                window_content.set_visual(obj, self.show_frame)
+                if selected_visual and not self.show_frame:
+                    obj.select_set(True)
+                    context.view_layer.objects.active = obj
+            if is_set('window_width'):
+                cage.set_input('Dim X', width)
+            if is_set('window_height'):
+                cage.set_input('Dim Z', height)
+            if is_set('height_from_floor'):
+                obj.location.z = self.height_from_floor
+            if is_set('offset'):
+                obj.location.x = self.offset
+            obj.update_tag()
+        except (RuntimeError, ValueError, KeyError) as exc:
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+    def draw(self, context):
+        layout = self.layout.column(align=True)
+        for name in ('window_width','window_height','height_from_floor','offset'):
+            layout.prop(self, name)
+        layout.separator()
+        layout.prop(self, 'show_frame')
+
+
+class home_builder_doors_windows_OT_flip_door_swing(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.flip_door_swing"
+    bl_label = "Flip Door Swing"
+    bl_description = "Flip the door swing direction (swings inside/outside)"
+    bl_options = {'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+
+    def execute(self, context):
+        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
+        if not swing:
+            return {'CANCELLED'}
+        new = not swing.get_input('Swing Inside')
+        swing.set_input('Swing Inside', new)
+        self.report({'INFO'}, "Door swing flipped")
+        return {'FINISHED'}
+
+
+class home_builder_doors_windows_OT_flip_door_hand(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.flip_door_hand"
+    bl_label = "Flip Door Hand"
+    bl_description = "Flip the door hand (left/right hinge)"
+    bl_options = {'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+
+    def execute(self, context):
+        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
+        if not swing:
+            return {'CANCELLED'}
+        new = not swing.get_input('Is Left')
+        swing.set_input('Is Left', new)
+        self.report({'INFO'}, "Door hand flipped")
+        return {'FINISHED'}
+
+
+class home_builder_doors_windows_OT_toggle_double_door(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.toggle_double_door"
+    bl_label = "Toggle Double Door"
+    bl_description = "Toggle between single and double door"
+    bl_options = {'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return hinged_doors.swing_for(hinged_doors.cage_for(context.object)) is not None
+
+    def execute(self, context):
+        swing = hinged_doors.swing_for(hinged_doors.cage_for(context.object))
+        if not swing:
+            return {'CANCELLED'}
+        new = not swing.get_input('Is Double')
+        swing.set_input('Is Double', new)
+        self.report({'INFO'}, "Door set to double" if new else "Door set to single")
+        return {'FINISHED'}
+
+
+class home_builder_doors_windows_OT_delete_door_window(bpy.types.Operator):
+    bl_idname = "home_builder_doors_windows.delete_door_window"
+    bl_label = "Delete Door/Window"
+    bl_description = "Delete the selected door or window"
+    bl_options = {'UNDO'}
+
+    object_type: bpy.props.StringProperty(name="Object Type", default='DOOR')  # type: ignore
+
+    @classmethod
+    def poll(cls, context):
+        if not context.object:
+            return False
+        return bool(native_doors.cage_for(context.object) or window_content.cage_for(context.object))
+
+    def execute(self, context):
+        obj = native_doors.cage_for(context.object) or window_content.cage_for(context.object)
+        affected = finishes.opening_host_walls(context, (obj,))
+        wall = obj.parent
+        
+        # Remove the boolean modifier from the wall if present
+        if wall and 'IS_WALL_BP' in wall:
+            # Find and remove the boolean modifier for this door/window
+            for mod in wall.modifiers:
+                if mod.type == 'BOOLEAN' and mod.object == obj:
+                    wall.modifiers.remove(mod)
+                    break
+        
+        # Delete all children first
+        children_to_delete = list(obj.children)
+        for child in children_to_delete:
+            bpy.data.objects.remove(child, do_unlink=True)
+        
+        # Delete the door/window object
+        bpy.data.objects.remove(obj, do_unlink=True)
+        for failure in finishes.refresh_wall_baseboards(context, affected):
+            self.report({'WARNING'}, f'Could not refresh baseboards: {failure}')
+        
+        self.report({'INFO'}, f"{self.object_type.title()} deleted")
+        return {'FINISHED'}
+
+
+classes = (
+    home_builder_doors_windows_OT_place_door,
+    home_builder_doors_windows_OT_place_double_door,
+    home_builder_doors_windows_OT_place_open_door,
+    FZM_OT_place_native_door,
+    FZM_OT_edit_native_door,
+    FZM_OT_edit_door,
+    home_builder_doors_windows_OT_place_window,
+    home_builder_doors_windows_OT_door_prompts,
+    home_builder_doors_windows_OT_window_prompts,
+    home_builder_doors_windows_OT_flip_door_swing,
+    home_builder_doors_windows_OT_flip_door_hand,
+    home_builder_doors_windows_OT_toggle_double_door,
+    home_builder_doors_windows_OT_delete_door_window,
+)
+
+register, unregister = bpy.utils.register_classes_factory(classes)
