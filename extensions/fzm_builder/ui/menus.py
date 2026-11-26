@@ -1,4 +1,5 @@
 import bpy
+from . import door_pose
 
 
 class HOME_BUILDER_OT_change_units(bpy.types.Operator):
@@ -79,12 +80,17 @@ class HOME_BUILDER_MT_door_commands(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("home_builder_doors_windows.door_prompts", text="Door Prompts")
+        pose_command = door_pose.command_label(context)
+        if pose_command:
+            layout.operator(door_pose.TOGGLE, text=pose_command,
+                            icon='LOOP_BACK' if pose_command == 'Close Door' else 'PLAY')
+            layout.separator()
+        if bpy.ops.fzm_builder.edit_door.poll():
+            layout.operator("fzm_builder.edit_door", icon='PREFERENCES')
         layout.operator("fzm_builder.door_casing")
-        layout.separator()
-        layout.operator("home_builder_doors_windows.flip_door_swing", text="Flip Door Swing")
-        layout.operator("home_builder_doors_windows.flip_door_hand", text="Flip Door Hand")
-        layout.operator("home_builder_doors_windows.toggle_double_door", text="Toggle Double Door")
+        if bpy.ops.home_builder_doors_windows.toggle_double_door.poll():
+            layout.separator()
+            layout.operator("home_builder_doors_windows.toggle_double_door", text="Toggle Double Door")
         layout.separator()
         layout.operator("home_builder_doors_windows.delete_door_window", text="Delete Door").object_type = 'DOOR'
 

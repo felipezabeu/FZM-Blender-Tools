@@ -1,5 +1,6 @@
 """Interactive controls for wall paint, doorway casing, and room baseboards."""
 
+from math import isfinite
 from pathlib import Path
 import re
 from tempfile import NamedTemporaryFile
@@ -11,6 +12,7 @@ from mathutils import Vector
 from mathutils.geometry import intersect_line_line_2d
 
 from .. import hb_assets, hb_types, hb_utils, paint_palettes
+from . import baseboard_perimeter, room_paint
 
 
 CASING = 'FZM_DOOR_CASING'
@@ -124,10 +126,12 @@ class FZM_OT_wall_paint(bpy.types.Operator):
     bl_options = {'UNDO'}
 
     scope: bpy.props.EnumProperty(name='Apply To', items=[
-        ('DEFAULT', 'Project Default', 'Update unpainted walls and future walls'),
-        ('ALL', 'All Walls', 'Replace every wall color and set the project default'),
-        ('SELECTED', 'Selected Walls', 'Paint selected walls individually'),
-        ('RESET', 'Reset Selected', 'Return selected walls to the project default'),
+        ('DEFAULT', 'Project Default', 'Update base project and future wall colors without removing room-specific paint'),
+        ('ALL', 'All Walls', 'Replace every wall color, clear room-specific paint, and set the project default'),
+        ('SELECTED', 'Selected Walls', 'Paint entire selected walls, replacing room-specific paint on those walls'),
+        ('RESET', 'Reset Selected', 'Return whole selected walls to the project default'),
+        ('ROOM', 'Selected Room Floor', 'Paint only the physical wall faces and portions facing one selected floor'),
+        ('RESET_ROOM', 'Reset Room Paint', 'Remove only the room paint associated with one selected floor'),
     ])
     input_mode: bpy.props.EnumProperty(name='Input', items=[
         ('HEX', 'HEX', 'Six-digit sRGB color'),
@@ -149,6 +153,9 @@ class FZM_OT_wall_paint(bpy.types.Operator):
     )
 
     def invoke(self, context, event):
+        active = context.active_object
+        if (not self.properties.is_property_set('scope') and active and active.get('IS_FLOOR_BP')):
+            self.scope = 'ROOM'
         self.catalog = wall_paint_catalog()
         return context.window_manager.invoke_props_dialog(self)
 
@@ -157,7 +164,11 @@ class FZM_OT_wall_paint(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.prop(self, 'scope')
-        if self.scope == 'RESET':
+        if self.scope in {'ROOM', 'RESET_ROOM'}:
+            self.layout.label(text='Select one floor. Only its room-facing wall spans are affected.')
+            if self.scope == 'ROOM':
+                self.layout.label(text='Use Material Preview or Rendered to see room colors.')
+        if self.scope in {'RESET', 'RESET_ROOM'}:
             return
 
         self.layout.prop(self, 'input_mode', expand=True)
@@ -192,6 +203,22 @@ class FZM_OT_wall_paint(bpy.types.Operator):
         return swatch
 
     def execute(self, context):
+        room_scope = self.scope in {'ROOM', 'RESET_ROOM'}
+        if room_scope:
+            floors = [obj for obj in context.selected_objects
+                      if obj.type == 'MESH' and obj.get('IS_FLOOR_BP')]
+            if len(floors) != 1:
+                self.report({'WARNING'}, 'Select exactly one room floor')
+                return {'CANCELLED'}
+            floor = floors[0]
+            if self.scope == 'RESET_ROOM':
+                try:
+                    count = room_paint.apply_room(context, floor)
+                except (ValueError, RuntimeError) as error:
+                    self.report({'WARNING'}, str(error))
+                    return {'CANCELLED'}
+                self.report({'INFO'}, f'Reset paint on {count} room-facing wall sides')
+                return {'FINISHED'}
         selected_only = self.scope in {'SELECTED', 'RESET'}
         targets = selected_walls(context) if selected_only else [
             obj for obj in context.scene.objects if obj.get('IS_WALL_BP')
@@ -220,6 +247,18 @@ class FZM_OT_wall_paint(bpy.types.Operator):
                 return {'CANCELLED'}
             material = paint_material(color, swatch)
 
+        if room_scope:
+            try:
+                count = room_paint.apply_room(context, floor, material)
+            except (ValueError, RuntimeError) as error:
+                if material.users == 0:
+                    bpy.data.materials.remove(material)
+                self.report({'WARNING'}, str(error))
+                return {'CANCELLED'}
+            self.report({'INFO'}, f'Painted {count} room-facing wall sides')
+            return {'FINISHED'}
+        if self.scope in {'ALL', 'SELECTED', 'RESET'}:
+            room_paint.clear_walls(targets)
         if self.scope in {'DEFAULT', 'ALL'}:
             context.scene.home_builder.wall_material = material
         if self.scope != 'DEFAULT':
@@ -292,44 +331,97 @@ def casing_vertices(profile, width, height, depth, trim_width, projection):
     return vertices, faces
 
 
-def make_casing(context, door, profile, width, projection, material):
+def _colonial_casing_profile():
+    """Casing-only eased fillet and S-curve, sampled at constant real scale."""
+    def cubic(points, steps):
+        p0,p1,p2,p3 = [Vector(p) for p in points]
+        return [tuple(p0*(1-t)**3+p1*3*(1-t)**2*t+p2*3*(1-t)*t*t+p3*t**3)
+                for t in (i/steps for i in range(1,steps+1))]
+    # Start at the inner corner (jamb), with a low shoulder. The thick outside
+    # bead gives a clean shadow line on the wall rather than an abrupt shelf.
+    front = [(.0,.30),(.09,.30)]
+    front += cubic((front[-1],(.13,.30),(.17,.37),(.22,.39)),5)
+    front += cubic((front[-1],(.48,.42),(.52,.94),(.78,.96)),18)
+    front += cubic((front[-1],(.91,.98),(.98,.88),(1.,.65)),10)
+    return ((0.,0.),(1.,0.),*reversed(front))
+
+
+CASING_PROFILES = {**PROFILES, 'COLONIAL':_colonial_casing_profile()}
+
+
+def _cage_dimensions(door):
     cage = hb_types.GeoNodeCage(door)
-    dimensions = [cage.get_input(name) for name in ('Dim X', 'Dim Z', 'Dim Y')]
-    vertices, faces = casing_vertices(PROFILES[profile], *dimensions, width, projection)
+    names=('Dim X','Dim Z','Dim Y')
+    if not cage.has_modifier() or any(not cage.has_input(name) for name in names):
+        raise ValueError(f'{door.name} does not have a supported opening.')
+    dims = tuple(cage.get_input(name) for name in names)
+    if not all(isfinite(value) and value > 0 for value in dims):
+        raise ValueError(f'{door.name} does not have finite, positive opening dimensions.')
+    return cage,dims
+
+
+def make_casing(context, door, profile, width, projection, material):
+    cage,dimensions = _cage_dimensions(door)
+    cross_section=CASING_PROFILES[profile]
+    vertices, faces = casing_vertices(cross_section, *dimensions, width, projection)
     mesh = create_mesh('Door Casing', vertices, faces)
     casing = bpy.data.objects.new('Door Casing', mesh)
-    context.collection.objects.link(casing)
-    casing.parent = door
-    casing.hide_select = True
-    casing[CASING] = True
-    casing['profile'] = profile
-    casing['width'] = width
-    casing['projection'] = projection
-    if material:
-        mesh.materials.append(material)
+    try:
+        (door.users_collection[0] if door.users_collection else context.collection).objects.link(casing)
+        casing.parent = door
+        casing.hide_select = True
+        casing[CASING] = True
+        casing['profile'] = profile
+        casing['fzm_casing_profile_revision'] = 2 if profile == 'COLONIAL' else 1
+        casing['width'] = width
+        casing['projection'] = projection
+        if material:
+            mesh.materials.append(material)
 
-    # Offsets on independent shape keys keep the joins mitered as the opening changes.
-    casing.shape_key_add(name='Basis')
-    for index, (name, size) in enumerate(zip(('Dim X', 'Dim Z', 'Dim Y'), dimensions)):
-        changed = dimensions.copy()
-        changed[index] += 1
-        coordinates, _ = casing_vertices(PROFILES[profile], *changed, width, projection)
-        key = casing.shape_key_add(name=name)
-        for point, coordinate in zip(key.data, coordinates):
-            point.co = coordinate
-        key.slider_min = -10
-        key.slider_max = 10
-        curve = key.driver_add('value')
-        hb_utils.add_driver_variables(curve, [cage.var_input(name, 'dimension')])
-        curve.driver.expression = f'dimension - {size!r}'
+        # Offsets on independent shape keys keep the joins mitered as each
+        # individual opening changes, even after applying one profile in bulk.
+        casing.shape_key_add(name='Basis')
+        for index, (name, size) in enumerate(zip(('Dim X', 'Dim Z', 'Dim Y'), dimensions)):
+            changed = list(dimensions)
+            changed[index] += 1
+            coordinates, _ = casing_vertices(cross_section, *changed, width, projection)
+            key = casing.shape_key_add(name=name)
+            for point, coordinate in zip(key.data, coordinates):
+                point.co = coordinate
+            key.slider_min = -10
+            key.slider_max = 10
+            curve = key.driver_add('value')
+            hb_utils.add_driver_variables(curve, [cage.var_input(name, 'dimension')])
+            curve.driver.expression = f'dimension - {size!r}'
+    except Exception:
+        remove_finish(casing)
+        raise
     return casing
+
+
+def casing_targets(context, scope):
+    if scope == 'SCENE':
+        # No recursive lookups or assumptions about other scenes / the project.
+        candidates=(o for o in context.scene.objects if o.get('IS_ENTRY_DOOR_BP'))
+    else:
+        candidates=context.selected_objects or (context.object,)
+    result=set()
+    for obj in candidates:
+        door=door_from_object(obj)
+        if door and door.library is None and door.override_library is None and door.name in context.scene.objects:
+            result.add(door)
+    return sorted(result,key=lambda o:o.name)
 
 
 class FZM_OT_door_casing(bpy.types.Operator):
     bl_idname = 'fzm_builder.door_casing'
     bl_label = 'Door Casing'
+    bl_description = 'Apply one casing profile to selected Builder doors or all doors in this scene'
     bl_options = {'UNDO'}
 
+    scope: bpy.props.EnumProperty(name='Apply To',items=(
+        ('SELECTED','Selected Doors','Apply the same profile to selected openings only'),
+        ('SCENE','All Doors in This Scene','Apply to all local Builder openings in this scene, not other room scenes')))
     profile: bpy.props.EnumProperty(name='Profile', items=PROFILE_ITEMS)
     width: bpy.props.FloatProperty(name='Width', default=0.064, min=0.006, unit='LENGTH')
     projection: bpy.props.FloatProperty(name='Thickness', default=0.016, min=0.003, unit='LENGTH')
@@ -338,35 +430,71 @@ class FZM_OT_door_casing(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        door = door_from_object(context.object)
-        return bool(door and hb_types.GeoNodeCage(door).has_modifier())
+        return context.mode == 'OBJECT' and bool(casing_targets(context,'SELECTED') or
+                                                casing_targets(context,'SCENE'))
 
     def invoke(self, context, event):
-        door = door_from_object(context.object)
-        old = next((child for child in door.children if child.get(CASING)), None)
+        selected=casing_targets(context,'SELECTED')
+        door=door_from_object(context.object)
+        if door not in selected:
+            door=selected[0] if selected else None
+        old = next((child for child in door.children if child.get(CASING)), None) if door else None
+        self.remove = False
+        self.scope = 'SELECTED'
+        self.profile,self.width,self.projection,self.material='FLAT',.064,.016,''
         if old:
             self.profile = old['profile']
             self.width = old['width']
             self.projection = old['projection']
             if old.data.materials:
                 self.material = old.data.materials[0].name if old.data.materials[0] else ''
-        return context.window_manager.invoke_props_dialog(self)
+        return context.window_manager.invoke_props_dialog(self,width=385)
 
     def draw(self, context):
-        self.layout.prop(self, 'remove')
+        layout=self.layout
+        layout.prop(self,'scope')
+        count = len(casing_targets(context,self.scope))
+        if count:
+            layout.label(text=f'{count} opening(s) in scope')
+        else:
+            layout.label(text='Select one or more door openings or change scope.',icon='INFO')
+        layout.prop(self,'remove')
         if not self.remove:
             for name in ('profile', 'width', 'projection'):
-                self.layout.prop(self, name)
-            self.layout.prop_search(self, 'material', bpy.data, 'materials')
+                layout.prop(self, name)
+            layout.prop_search(self, 'material', bpy.data, 'materials')
 
     def execute(self, context):
-        door = door_from_object(context.object)
-        previous = [obj for obj in door.children if obj.get(CASING)]
-        if not self.remove:
-            make_casing(context, door, self.profile, self.width, self.projection,
-                        bpy.data.materials.get(self.material))
+        doors=casing_targets(context,self.scope)
+        if not doors:
+            self.report({'WARNING'},'Select one or more local Builder doors.')
+            return {'CANCELLED'}
+        if not self.remove and not all(isfinite(v) and v > 0. for v in (self.width,self.projection)):
+            self.report({'WARNING'},'Use a finite positive casing width and thickness.')
+            return {'CANCELLED'}
+        previous = [obj for door in doors for obj in door.children if obj.get(CASING)]
+        drafts=[]
+        try:
+            if not self.remove:
+                for door in doors:
+                    _cage_dimensions(door)
+                material=bpy.data.materials.get(self.material)
+                for door in doors:
+                    drafts.append(make_casing(context,door,self.profile,self.width,self.projection,material))
+        except (RuntimeError,ValueError,KeyError) as exc:
+            for obj in drafts:
+                remove_finish(obj)
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
         for obj in previous:
+            # User-created children are not part of the managed casing.
+            for child in list(obj.children):
+                pose=child.matrix_world.copy()
+                child.parent=None
+                child.matrix_world=pose
             remove_finish(obj)
+        refresh_opening_baseboards(context, doors, self.report)
+        self.report({'INFO'},f'Casing {"removed" if self.remove else "applied"} on {len(doors)} door opening(s).')
         return {'FINISHED'}
 
 
@@ -479,23 +607,90 @@ def floor_covers_room(context, floor, corners, edges, level):
     return True
 
 
-def wall_spans(obj, origin, end, level, height):
+def _casing_interval(casing, depsgraph, origin, direction, inward, level, height):
+    """Project evaluated casing edges overlapping the actual trim/wall face.
+
+    Casing may have shape-key drivers, object transforms, or different extents
+    on its two faces. Test the side and board height in world space; dimensions
+    metadata is neither a geometric bound nor authoritative after editing.
+    """
+    obj = casing.evaluated_get(depsgraph)
+    mesh = obj.data
+    if obj.type != 'MESH' or not mesh.edges:
+        return None
+    coords = []
+    for vertex in mesh.vertices:
+        point = obj.matrix_world @ vertex.co
+        delta = point.to_2d() - origin
+        coords.append((delta.dot(direction), delta.dot(inward), point.z))
+    minimum, maximum = float('inf'), -float('inf')
+    for edge in mesh.edges:
+        a, b = (coords[i] for i in edge.vertices)
+        lo, hi = 0., 1.
+        # Built-in casings recess their backing by 1 mm. Allow that backing
+        # and a small tolerance; do not consider the opposite-face casing.
+        for av, bv in ((a[1] + 2 * CUT_TOLERANCE, b[1] + 2 * CUT_TOLERANCE),
+                       (a[2] - level + CUT_TOLERANCE, b[2] - level + CUT_TOLERANCE),
+                       (level + height - a[2], level + height - b[2])):
+            if av < 0 and bv < 0:
+                lo, hi = 1., 0.
+                break
+            if av < 0:
+                lo = max(lo, -av / (bv - av))
+            elif bv < 0:
+                hi = min(hi, av / (av - bv))
+        if lo <= hi:
+            x0, x1 = sorted(a[0] + t * (b[0] - a[0]) for t in (lo, hi))
+            minimum, maximum = min(minimum, x0), max(maximum, x1)
+    return (minimum, maximum) if minimum < maximum else None
+
+
+def _wall_doors(wall):
+    # The actual cutter also identifies a door after imports/reparenting.
+    # Retain child lookup for legacy saved openings, but never windows.
+    doors = set(wall.children)
+    doors.update(mod.object for mod in wall.modifiers
+                 if mod.type == 'BOOLEAN' and mod.operation == 'DIFFERENCE' and mod.object)
+    return (door for door in sorted(doors, key=lambda obj: obj.name)
+            if door.get('IS_ENTRY_DOOR_BP') and not door.get('IS_WINDOW_BP'))
+
+
+def wall_spans(obj, origin, end, inward, level, height, depsgraph):
     direction = (end - origin).normalized()
     length = (end - origin).length
     gaps = []
-    for child in obj.children:
-        if not child.get('IS_ENTRY_DOOR_BP'):
+    for door in _wall_doors(obj):
+        cage = hb_types.GeoNodeCage(door)
+        if not all(cage.has_input(name) for name in ('Dim X', 'Dim Y', 'Dim Z')):
             continue
-        cage = hb_types.GeoNodeCage(child)
-        z = child.matrix_world.translation.z
-        if not cage.has_input('Dim X') or z > level + height or z + cage.get_input('Dim Z') <= level:
+        width, depth, opening_height = (cage.get_input(name) for name in ('Dim X', 'Dim Y', 'Dim Z'))
+        if not all(v is not None and isfinite(v) for v in (width, depth, opening_height)):
             continue
-        start = child.matrix_world.translation.to_2d()
-        finish = (child.matrix_world @ Vector((cage.get_input('Dim X'), 0, 0))).to_2d()
-        start, finish = sorted(((start - origin).dot(direction), (finish - origin).dot(direction)))
-        casing = next((part for part in child.children if part.get(CASING)), None)
-        clear = casing['width'] if casing else 0
-        gaps.append((max(0, start - clear), min(length, finish + clear)))
+        if abs(width) < CUT_TOLERANCE or abs(opening_height) < CUT_TOLERANCE:
+            continue
+        matrix = door.evaluated_get(depsgraph).matrix_world
+        # Use the opening edges on this face of the wall, not the swing leaf
+        # or a global XY bounding box that also spans the other face.
+        y = min((0., depth), key=lambda y:
+                abs(((matrix @ Vector((0, y, 0))).to_2d() - origin).dot(inward)))
+        a = matrix @ Vector((0, y, 0))
+        b = matrix @ Vector((width, y, 0))
+        bottom = min(a.z, b.z)
+        high = (matrix.to_3x3() @ Vector((0, 0, opening_height))).z
+        top = max(a.z, b.z) + max(high, 0.)
+        bottom += min(high, 0.)
+        if bottom >= level + height or top <= level:
+            continue
+        start, finish = sorted(((a.to_2d() - origin).dot(direction),
+                                (b.to_2d() - origin).dot(direction)))
+        for casing in door.children:
+            if casing.get(CASING):
+                bounds = _casing_interval(casing, depsgraph, origin, direction, inward, level, height)
+                if bounds:
+                    start, finish = min(start, bounds[0]), max(finish, bounds[1])
+        start, finish = max(0., start), min(length, finish)
+        if finish - start > CUT_TOLERANCE:
+            gaps.append((start, finish))
     cursor = 0.0
     for start, end in sorted(gaps):
         if end <= cursor:
@@ -507,7 +702,8 @@ def wall_spans(obj, origin, end, level, height):
         yield cursor, length
 
 
-def baseboard_geometry(context, floor, walls, profile, height, thickness):
+def baseboard_geometry(context, floor, walls, profile, height, thickness, *, allow_empty=False):
+    depsgraph = context.evaluated_depsgraph_get()
     edges, level = room_edges(walls)
     corners = inner_corners(edges, 0)
     if not floor_covers_room(context, floor, corners, edges, level):
@@ -523,7 +719,7 @@ def baseboard_geometry(context, floor, walls, profile, height, thickness):
         start, end = corners[i], corners[j]
         direction = (end - start).normalized()
         length = (end - start).length
-        for left, right in wall_spans(wall, start, end, level, height):
+        for left, right in wall_spans(wall, start, end, normal, level, height, depsgraph):
             if right - left < CUT_TOLERANCE:
                 continue
             rings = [[], []]
@@ -532,19 +728,122 @@ def baseboard_geometry(context, floor, walls, profile, height, thickness):
                 a = rim[i] if left == 0 else start + direction * left + offset
                 b = rim[j] if right == length else start + direction * right + offset
                 if (b - a).dot(direction) < CUT_TOLERANCE:
-                    raise ValueError('A doorway leaves too little space for a mitered baseboard')
+                    break  # Opening consumed this miter; leave other boards intact.
                 for ring, point in zip(rings, (a, b)):
                     ring.append(inverse @ Vector((*point, level + up * height)))
-            append_loft(vertices, faces, rings)
-    if not faces:
+            if len(rings[0]) == len(sections):
+                append_loft(vertices, faces, rings)
+    if not faces and not allow_empty:
         raise ValueError('The selected room has no space for baseboards')
     return vertices, faces
 
 
+def automatic_baseboard_geometry(context, floor, profile, height, thickness, *, allow_empty=False):
+    vertices, faces, walls = [], [], set()
+    depsgraph = context.evaluated_depsgraph_get()
+
+    def spans(obj, origin, end, inward, level, height):
+        return wall_spans(obj, origin, end, inward, level, height, depsgraph)
+
+    for _, rings in baseboard_perimeter.board_sections(
+        context, floor, PROFILES[profile], height, thickness, spans, walls,
+    ):
+        append_loft(vertices, faces, rings)
+    if not walls:
+        raise ValueError('No physical walls match the selected floor perimeter at this level')
+    if not faces and not allow_empty:
+        raise ValueError('The selected room has no space for baseboards')
+    return vertices, faces, walls
+
+
+def _wall_refs(trim, scene):
+    return {wall for wall in trim.get('walls', {}).values()
+            if wall and wall.name in scene.objects}
+
+
+def _save_wall_refs(trim, walls):
+    trim['walls'] = {str(i): wall for i, wall in enumerate(sorted(walls, key=lambda wall: wall.name))}
+
+
+def _replace_baseboard_mesh(trim, mesh):
+    old_mesh = trim.data
+    trim.data = mesh
+    if old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+
+
+def _replace_baseboard_preserving_materials(trim, mesh):
+    old_slots = [(slot.link, slot.material) for slot in trim.material_slots]
+    for material in trim.data.materials:
+        mesh.materials.append(material)
+    _replace_baseboard_mesh(trim, mesh)
+    for slot, (link, material) in zip(trim.material_slots, old_slots):
+        if link == 'OBJECT':
+            slot.link = link
+            slot.material = material
+
+
+def refresh_wall_baseboards(context, walls):
+    """Refresh only existing trims attached to a changed Builder wall.
+
+    Called inside the committing operator so the door and affected trim share
+    its undo step. Saved manual trims keep their wall list and profile.
+    """
+    walls = {wall for wall in walls if wall and wall.get('IS_WALL_BP')}
+    if not walls:
+        return []
+    affected = [(trim, refs) for trim in context.scene.objects
+                if trim.get(BASEBOARD) and trim.type == 'MESH' and trim.library is None
+                and trim.override_library is None and trim.parent and trim.parent.get('IS_FLOOR_BP')
+                and (refs := _wall_refs(trim, context.scene)) & walls]
+    if not affected:
+        return []
+    context.view_layer.update()
+    failures = []
+    for trim, refs in affected:
+        try:
+            profile, height, thickness = (trim[key] for key in ('profile', 'height', 'thickness'))
+            if trim.get('wall_source', 'SELECTED') == 'AUTO':
+                v, f, refs = automatic_baseboard_geometry(context, trim.parent, profile,
+                                                          height, thickness, allow_empty=True)
+            else:
+                v, f = baseboard_geometry(context, trim.parent, refs, profile,
+                                          height, thickness, allow_empty=True)
+            mesh = create_mesh('Room Baseboards', v, f)
+            _replace_baseboard_preserving_materials(trim, mesh)
+            _save_wall_refs(trim, refs)
+        except (KeyError, RuntimeError, ValueError) as error:
+            failures.append(f'{trim.name}: {error}')
+    return failures
+
+
+def opening_host_walls(context, doors):
+    doors = {door for door in doors if door and door.get('IS_ENTRY_DOOR_BP')}
+    if not doors:
+        return set()
+    walls = {hb_utils.get_wall_bp(door.parent) for door in doors if door.parent}
+    walls.update(o for o in context.scene.objects if o.get('IS_WALL_BP') and any(
+        m.type == 'BOOLEAN' and m.operation == 'DIFFERENCE' and m.object in doors
+        for m in o.modifiers
+    ))
+    return walls
+
+
+def refresh_opening_baseboards(context, doors, report):
+    for failure in refresh_wall_baseboards(context, opening_host_walls(context, doors)):
+        report({'WARNING'}, f'Could not refresh baseboards: {failure}')
+
+
 class FZM_OT_room_baseboards(bpy.types.Operator):
     bl_idname = 'fzm_builder.room_baseboards'
-    bl_label = 'Room Baseboards'
+    bl_label = 'Add Baseboards'
+    bl_description = 'Add or edit baseboards on the physical walls along a selected floor'
     bl_options = {'UNDO'}
+
+    wall_source: bpy.props.EnumProperty(name='Walls', items=[
+        ('AUTO', 'Automatic', 'Find physical walls bordering the selected floor'),
+        ('SELECTED', 'Selected Walls', 'Use a manually selected closed perimeter, or the previous perimeter'),
+    ], default='AUTO')
 
     profile: bpy.props.EnumProperty(name='Profile', items=PROFILE_ITEMS)
     height: bpy.props.FloatProperty(name='Height', default=0.1143, min=0.01, unit='LENGTH')
@@ -554,6 +853,8 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
 
     def invoke(self, context, event):
         floors = [obj for obj in context.selected_objects if obj.get('IS_FLOOR_BP')]
+        if not self.properties.is_property_set('wall_source'):
+            self.wall_source = 'SELECTED' if selected_walls(context) else 'AUTO'
         if len(floors) == 1:
             old = next((part for part in floors[0].children if part.get(BASEBOARD)), None)
             if old:
@@ -567,7 +868,11 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
     def draw(self, context):
         self.layout.prop(self, 'remove')
         if not self.remove:
-            self.layout.label(text='Select the room floor and perimeter walls.')
+            self.layout.prop(self, 'wall_source')
+            if self.wall_source == 'AUTO':
+                self.layout.label(text='Select one floor. Only physical wall edges receive trim.')
+            else:
+                self.layout.label(text='Select the floor and its closed perimeter walls.')
             for name in ('profile', 'height', 'thickness'):
                 self.layout.prop(self, name)
             self.layout.prop_search(self, 'material', bpy.data, 'materials')
@@ -581,14 +886,20 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
         previous = [obj for obj in floor.children if obj.get(BASEBOARD)]
         if not self.remove:
             walls = selected_walls(context)
-            if not walls and previous:
-                walls = {wall for wall in previous[0].get('walls', {}).values()
-                         if wall and wall.name in context.scene.objects}
+            wall_source = self.wall_source
+            if walls and not self.properties.is_property_set('wall_source'):
+                wall_source = 'SELECTED'  # Preserve older callers passing selected walls.
             try:
-                vertices, faces = baseboard_geometry(
-                    context, floor, walls,
-                    self.profile, self.height, self.thickness,
-                )
+                if wall_source == 'AUTO':
+                    vertices, faces, walls = automatic_baseboard_geometry(
+                        context, floor, self.profile, self.height, self.thickness,
+                    )
+                else:
+                    if not walls and previous:
+                        walls = _wall_refs(previous[0], context.scene)
+                    vertices, faces = baseboard_geometry(
+                        context, floor, walls, self.profile, self.height, self.thickness,
+                    )
             except ValueError as error:
                 self.report({'WARNING'}, str(error))
                 return {'CANCELLED'}
@@ -598,10 +909,7 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
                 mesh.materials.append(material)
             trim = previous.pop(0) if previous else None
             if trim:
-                old_mesh = trim.data
-                trim.data = mesh
-                if old_mesh.users == 0:
-                    bpy.data.meshes.remove(old_mesh)
+                _replace_baseboard_mesh(trim, mesh)
             else:
                 trim = bpy.data.objects.new('Room Baseboards', mesh)
                 context.collection.objects.link(trim)
@@ -610,7 +918,8 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
             trim['profile'] = self.profile
             trim['height'] = self.height
             trim['thickness'] = self.thickness
-            trim['walls'] = {str(i): wall for i, wall in enumerate(sorted(walls, key=lambda wall: wall.name))}
+            trim['wall_source'] = wall_source
+            _save_wall_refs(trim, walls)
         for obj in previous:
             remove_finish(obj)
         return {'FINISHED'}

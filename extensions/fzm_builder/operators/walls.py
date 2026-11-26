@@ -9,6 +9,13 @@ from mathutils.geometry import intersect_line_plane
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from .. import hb_types, hb_snap, hb_placement, units
+from .floor_divider import FZM_OT_floor_divider
+from .floor_finish import FZM_OT_floor_finish
+from .floor_tiles import FZM_OT_floor_tile_layout
+from .shower_area import FZM_OT_shower_area
+from .wall_divider import FZM_OT_wall_divider, FZM_OT_pick_wall_divider
+from .shower_fixtures import FZM_OT_shower_fixture
+from .wall_boolean import wall_difference
 
 # Wall Miter Angle Calculation
 def calculate_wall_miter_angles(wall_obj):
@@ -3886,13 +3893,7 @@ class home_builder_walls_OT_draw_wall_cutter(bpy.types.Operator, hb_placement.Pl
 
     def add_boolean_to_wall(self, wall_obj, cutter_obj):
         """Add a boolean DIFFERENCE modifier to the wall's mesh children."""
-        wall = hb_types.GeoNodeWall(wall_obj)
-        mod_name = f"Cut - {cutter_obj.name}"
-        mod = wall_obj.modifiers.new(name=mod_name, type='BOOLEAN')
-        mod.operation = 'DIFFERENCE'
-        mod.object = cutter_obj
-        mod.solver = 'EXACT'
-        return mod
+        return wall_difference(wall_obj, cutter_obj)
 
     def finish(self, context):
         """Create cutter cube, apply boolean, clean up."""
@@ -4007,6 +4008,13 @@ classes = (
     home_builder_walls_OT_draw_walls,
     home_builder_walls_OT_wall_prompts,
     home_builder_walls_OT_add_floor,
+    FZM_OT_floor_divider,
+    FZM_OT_floor_finish,
+    FZM_OT_floor_tile_layout,
+    FZM_OT_shower_area,
+    FZM_OT_wall_divider,
+    FZM_OT_pick_wall_divider,
+    FZM_OT_shower_fixture,
     home_builder_walls_OT_draw_floor_cutter,
     home_builder_walls_OT_draw_wall_cutter,
     home_builder_walls_OT_add_ceiling,

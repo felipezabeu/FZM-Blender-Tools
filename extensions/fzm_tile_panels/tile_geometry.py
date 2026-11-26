@@ -10,6 +10,37 @@ from __future__ import annotations
 
 import math
 
+# Shared by the standalone geometry generator and Builder's metric shader.
+# Pattern cycle is the exact course fraction, not a second pattern definition.
+PATTERN_CYCLES = {"STACK": 1, "HALF": 2, "THIRD": 3}
+
+
+def tile_pitch(tile_width, tile_height, grout, pattern):
+    """Validate a layout and return pitch and course-cycle for any length unit."""
+    if not all(math.isfinite(v) for v in (tile_width, tile_height, grout)):
+        raise ValueError("Tile values must be finite")
+    if tile_width <= 0 or tile_height <= 0 or grout < 0:
+        raise ValueError("Tile dimensions must be positive and grout nonnegative")
+    if pattern not in PATTERN_CYCLES:
+        raise ValueError("Unknown pattern")
+    return tile_width + grout, tile_height + grout, PATTERN_CYCLES[pattern]
+
+
+def row_shift_fraction(row, cycle):
+    return (row % cycle) / cycle
+
+
+def tile_sample(u, v, tile_width, tile_height, grout, pattern, offset_u=0., offset_v=0.):
+    """Reference sampling of the same layout compiled by Blender's shader."""
+    pitch_u, pitch_v, cycle = tile_pitch(tile_width, tile_height, grout, pattern)
+    phase_u, phase_v = offset_u % pitch_u, offset_v % pitch_v
+    v -= phase_v
+    row = math.floor(v / pitch_v)
+    s = (u - phase_u + row_shift_fraction(row, cycle) * pitch_u) % pitch_u
+    t = v % pitch_v
+    return s, t, s >= tile_width or t >= tile_height
+
+
 INCH = 0.0254
 
 PRESETS = {
@@ -72,8 +103,6 @@ def generate_panel(
         raise ValueError("At least one tile material is required")
     if orientation not in ("HORIZONTAL", "VERTICAL"):
         raise ValueError("Unknown orientation")
-    if pattern not in ("STACK", "HALF", "THIRD"):
-        raise ValueError("Unknown pattern")
     if surface not in ("WALL", "FLOOR"):
         raise ValueError("Unknown panel type")
 
@@ -81,7 +110,7 @@ def generate_panel(
         tile_w, tile_h = max(tile_a, tile_b), min(tile_a, tile_b)
     else:
         tile_w, tile_h = min(tile_a, tile_b), max(tile_a, tile_b)
-    pitch_x, pitch_y = tile_w + grout, tile_h + grout
+    pitch_x, pitch_y, cycle = tile_pitch(tile_w, tile_h, grout, pattern)
     estimate = (math.ceil(panel_width / pitch_x) + 4) * (math.ceil(panel_height / pitch_y) + 4)
     if estimate > max_tiles:
         raise TooManyTiles(f"Panel would need too many tiles (~{estimate:,}); choose larger tiles or smaller panel")
@@ -126,7 +155,7 @@ def generate_panel(
         y1 = min(H, y1_full)
         if y1 - y0 <= eps:
             continue
-        shift_frac = 0.0 if pattern == "STACK" else ((row % (2 if pattern == "HALF" else 3)) / (2 if pattern == "HALF" else 3))
+        shift_frac = row_shift_fraction(row, cycle)
         base_x = phase_x - shift_frac * pitch_x
         col_min = math.floor(-base_x / pitch_x) - 1
         col_max = math.ceil((W - base_x) / pitch_x) + 1

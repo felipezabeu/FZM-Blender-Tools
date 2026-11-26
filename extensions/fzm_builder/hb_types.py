@@ -420,9 +420,10 @@ class GeoNodeWall(GeoNodeObject):
 
     @classmethod
     def apply_material(cls, obj, material):
+        from .operators import room_paint
+
         wall = cls(obj)
-        for name in cls.material_inputs(obj):
-            wall.set_input(name, material)
+        room_paint.update_base(wall, cls.material_inputs(obj), material)
         obj.update_tag()
 
     def assign_materials(self, context):

@@ -2,8 +2,11 @@ import bpy
 from .. import hb_project
 from .. import hb_layouts
 from .. import hb_details
+from ..operators.shower_fixtures import FIXTURE, fixture_from
+from ..operators.wall_divider import divider_wall
+from ..operators.shower_area import WALL_DIVIDERS
 
-CATEGORY_NAME = "Home Builder"
+CATEGORY_NAME = "FZM Builder"
 # =============================================================================
 # HOME BUILDER UI PANELS
 # All panels in the "Home Builder" category tab
@@ -370,9 +373,17 @@ class HOME_BUILDER_PT_room_layout_doors_windows(bpy.types.Panel):
         row.operator('home_builder_doors_windows.place_door', text="Single Door", icon='MESH_CUBE')
         row.operator('home_builder_doors_windows.place_double_door', text="Double Door", icon='MESH_CUBE')
         row.operator('home_builder_doors_windows.place_open_door', text="Open", icon='MESH_CUBE')
+        layout.operator('fzm_builder.place_native_door', icon='MESH_CUBE')
+        row = layout.row(align=True)
+        if bpy.ops.fzm_builder.edit_door.poll():
+            row.operator('fzm_builder.edit_door', icon='PREFERENCES')
+        row.operator('fzm_builder.door_casing', icon='MOD_SOLIDIFY')
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator('home_builder_doors_windows.place_window', text="Window", icon='MESH_PLANE')
+        row.operator('home_builder_doors_windows.place_window', text="3D Window", icon='MESH_PLANE').add_frame = True
+        row.operator('home_builder_doors_windows.place_window', text="Window Opening", icon='MESH_CUBE').add_frame = False
+        if bpy.ops.home_builder_doors_windows.window_prompts.poll():
+            layout.operator('home_builder_doors_windows.window_prompts', icon='PREFERENCES')
         
         col = layout.column(align=True)
         
@@ -416,7 +427,47 @@ class HOME_BUILDER_PT_room_layout_floor(bpy.types.Panel):
         row = layout.row()
         row.operator("home_builder_walls.add_floor")
         row.operator("home_builder_walls.draw_floor_cutter", icon="MOD_BOOLEAN")
+        layout.operator("fzm_builder.floor_divider")
+        layout.operator("fzm_builder.room_baseboards", icon="MOD_SOLIDIFY")
+        layout.operator("fzm_builder.floor_finish", icon="MATERIAL")
+        layout.operator("fzm_builder.floor_tile_layout", icon="TEXTURE")
+        layout.operator("fzm_builder.wall_paint", text="Paint Room Walls", icon="MATERIAL").scope = 'ROOM'
         layout.operator("home_builder_walls.add_ceiling")
+
+
+# SUBPANEL: Shower Area
+class HOME_BUILDER_PT_room_layout_shower(bpy.types.Panel):
+    bl_label = "Shower Area"
+    bl_idname = "HOME_BUILDER_PT_room_layout_shower"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = CATEGORY_NAME
+    bl_parent_id = "HOME_BUILDER_PT_room_layout"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("fzm_builder.shower_area", icon="MOD_BUILD")
+        divider = layout.column(align=True)
+        wall = divider_wall(context.active_object)
+        divider.operator("fzm_builder.wall_divider",
+                         text="Edit Wall Divider" if wall and wall.get(WALL_DIVIDERS) else "Wall Divider",
+                         icon="ARROW_LEFTRIGHT")
+        pickers = divider.row(align=True)
+        pickers.operator_context = 'INVOKE_DEFAULT'
+        pickers.operator("fzm_builder.pick_wall_divider", text="Pick Start").boundary = 'START'
+        pickers.operator("fzm_builder.pick_wall_divider", text="Pick End").boundary = 'END'
+        if wall is None:
+            divider.label(text="Pick a wall, or select one to enter exact distances.")
+        row = layout.row(align=True)
+        fixture = fixture_from(context.active_object)
+        kind = fixture.get(FIXTURE) if fixture else None
+        row.operator("fzm_builder.shower_fixture", text="Edit Niche" if kind == 'NICHE' else "Add Niche",
+                     icon="MOD_BOOLEAN").kind = 'NICHE'
+        row.operator("fzm_builder.shower_fixture", text="Edit Bench" if kind == 'BENCH' else "Add Bench",
+                     icon="MESH_CUBE").kind = 'BENCH'
+        if not fixture:
+            layout.label(text="Select a Shower Area wall tile face.")
 
 
 # SUBPANEL: Lighting
@@ -1316,6 +1367,7 @@ classes = (
     HOME_BUILDER_PT_room_layout_walls,
     HOME_BUILDER_PT_room_layout_doors_windows,
     HOME_BUILDER_PT_room_layout_floor,
+    HOME_BUILDER_PT_room_layout_shower,
     HOME_BUILDER_PT_room_layout_lighting,
     HOME_BUILDER_PT_room_layout_obstacles,
     HOME_BUILDER_PT_room_layout_reference_image,

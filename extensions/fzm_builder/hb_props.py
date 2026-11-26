@@ -149,11 +149,21 @@ def update_auto_scale(self, context):
 def update_show_entry_door_and_window_cages(self, context):
     for obj in context.scene.objects:
         if obj.get('IS_ENTRY_DOOR_BP'):
+            if obj.get('FZM_HINGED_3D_ENABLED'):
+                obj['FZM_HINGED_OLD_DISPLAY'] = 'TEXTURED' if self.show_entry_door_and_window_cages else 'WIRE'
+                obj['FZM_HINGED_OLD_IN_FRONT'] = self.show_entry_door_and_window_cages
+                continue
             obj.display_type = 'TEXTURED' if self.show_entry_door_and_window_cages else 'WIRE'
             obj.show_in_front = True if self.show_entry_door_and_window_cages else False
         if obj.get('IS_WINDOW_BP'):
-            obj.display_type = 'TEXTURED' if self.show_entry_door_and_window_cages else 'WIRE'
-            obj.show_in_front = True if self.show_entry_door_and_window_cages else False
+            from .operators import window_content
+            display = 'TEXTURED' if self.show_entry_door_and_window_cages else 'WIRE'
+            if window_content.visual_for(obj):
+                obj[window_content.OLD_DISPLAY] = display
+                obj[window_content.OLD_IN_FRONT] = self.show_entry_door_and_window_cages
+            else:
+                obj.display_type = display
+                obj.show_in_front = self.show_entry_door_and_window_cages
 
 
 def update_wall_material(self, context):
