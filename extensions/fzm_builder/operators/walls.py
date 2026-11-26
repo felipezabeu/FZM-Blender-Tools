@@ -10,6 +10,7 @@ from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from .. import hb_types, hb_snap, hb_placement, units
 from .floor_divider import FZM_OT_floor_divider
+from .divide_wall import FZM_OT_divide_wall
 from .floor_outline import FZM_OT_update_floor_outline, remember_created_floor
 from .floor_finish import FZM_OT_floor_finish
 from .floor_tiles import FZM_OT_floor_tile_layout
@@ -4018,6 +4019,7 @@ classes = (
     home_builder_walls_OT_wall_prompts,
     home_builder_walls_OT_add_floor,
     FZM_OT_floor_divider,
+    FZM_OT_divide_wall,
     FZM_OT_update_floor_outline,
     FZM_OT_floor_finish,
     FZM_OT_floor_tile_layout,

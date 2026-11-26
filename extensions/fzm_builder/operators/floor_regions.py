@@ -11,6 +11,9 @@ from .floor_divider import area, inside
 
 ROOT = 'FZM_FLOOR_REGION_ROOT'
 HOLES = 'FZM_FLOOR_REGION_HOLES'
+ENVELOPE = 'FZM_FLOOR_REGION_ENVELOPE'
+SPAN_X = 'FZM_FLOOR_REGION_HOST_SPANS_X'
+DATUM = 'FZM_FLOOR_REGION_DATUM'
 
 
 @dataclass
@@ -19,14 +22,119 @@ class Region:
     ring: list
     children: list = field(default_factory=list)
     obj: object = None
+    spans: list = field(default_factory=list)
+    source: object = None
 
     @property
     def key(self):
         return frozenset(wall for wall, _ in self.hosts)
 
     @property
+    def identity(self):
+        return _identity(self.hosts, partial=bool(self.spans))
+
+    @property
     def holes(self):
         return [child.ring for child in self.children]
+
+
+
+def _wall_interval(wall, a, b, matrix, z):
+    inv = wall.matrix_world.inverted()
+    return tuple((inv @ matrix @ Vector((*p,z))).x for p in (a,b))
+
+
+def _records(prop):
+    return {key: dict(row.items()) for key,row in prop.items()}
+
+
+def plan_wall_division_bindings(context, head, cut_x):
+    """Preflight floor metadata against a proposed structural wall division."""
+    if not (0. < cut_x):
+        raise ValueError('The wall division point must be inside the wall.')
+    result = []
+    for floor in context.scene.objects:
+        if not floor.get('IS_FLOOR_BP'):
+            continue
+        fields = {key: _records(floor[key]) for key in (outlines.HOSTS,ENVELOPE,SPAN_X) if key in floor}
+        if not any(row.get('wall') == head for key in (outlines.HOSTS,ENVELOPE)
+                   for row in fields.get(key,{}).values()):
+            continue
+        if not outlines.selected_floor(floor) or floor.mode!='OBJECT':
+            raise ValueError(f'{floor.name}: finish editing the associated floor before dividing this wall.')
+        spans,hosts = fields.get(SPAN_X),fields.get(outlines.HOSTS,{})
+        if floor.get(ENVELOPE) and spans is None:
+            raise ValueError(f'{floor.name}: update its room outline before dividing a bound wall.')
+        if spans is not None and (set(spans)!=set(hosts) or any(
+                'start' not in row or 'end' not in row for row in spans.values())):
+            raise ValueError(f'{floor.name}: a saved wall span could not be verified.')
+        result.append((floor,fields,cut_x))
+    # Existing pre-link floors can be associated only when their actual
+    # closed wall match is exact; do not bind an unrelated/manual floor.
+    legacy = outlines.legacy_before_wall_edit(context,{head})
+    return result, legacy
+
+
+def apply_wall_division_bindings(plan, head, tail):
+    """Apply preflighted references; restore with restore_wall_division_bindings()."""
+    recorded, legacy = plan
+    for floor,fields,cut in recorded:
+        for field in (outlines.HOSTS,ENVELOPE):
+            if field not in fields:
+                continue
+            old_spans = fields.get(SPAN_X) if field==outlines.HOSTS else None
+            updated, new_spans = {}, {}
+            def append(row, interval=None):
+                name=f'{len(updated):04d}'
+                updated[name] = row.copy()
+                if interval is not None:
+                    new_spans[name] = {'start':interval[0],'end':interval[1]}
+            for key,row in sorted(fields[field].items()):
+                span = old_spans[key] if old_spans is not None else None
+                if row.get('wall') != head:
+                    append(row,(span['start'],span['end']) if span is not None else None)
+                    continue
+                second = dict(row,wall=tail)
+                if span is None:
+                    for part in ((second,row) if row.get('reversed') else (row,second)):
+                        append(part)
+                    continue
+                a,b = span['start'],span['end']
+                lo, hi = sorted((a,b))
+                # These values were recorded in each wall's own model
+                # space and need rebasing to the newly moved tail origin.
+                if hi <= cut + outlines.SHAPE_EPS:
+                    append(row,(a,b))
+                elif lo >= cut - outlines.SHAPE_EPS:
+                    append(second,(a-cut,b-cut))
+                elif a > b:
+                    append(second,(a-cut,0.))
+                    append(row,(cut,b))
+                else:
+                    append(row,(a,cut))
+                    append(second,(0.,b-cut))
+            floor[field] = updated
+            if old_spans is not None:
+                floor[SPAN_X] = new_spans
+    for floor,hosts,poly in legacy:
+        expanded = []
+        for wall,rev in hosts:
+            if wall==head:
+                expanded.extend(((tail,True),(head,True)) if rev else ((head,False),(tail,False)))
+            else:
+                expanded.append((wall,rev))
+        outlines._store(floor,expanded,poly)
+
+
+def restore_wall_division_bindings(plan):
+    recorded, legacy = plan
+    for floor,fields,_ in recorded:
+        for field,values in fields.items():
+            floor[field] = values
+    for floor,_,_ in legacy:
+        for key in (outlines.HOSTS,outlines.KIND,outlines.RIM,outlines.TRANSFORM):
+            if key in floor:
+                del floor[key]
 
 
 def edges(ring):
@@ -107,9 +215,39 @@ def _closed_components(walls):
             yield cycle
 
 
-def _regions(hosts, poly, inverse, level, walls):
-    root = Region(hosts,poly)
-    host_set = root.key
+def _identity(hosts, *, partial=False):
+    if not partial:
+        return frozenset(wall for wall,_ in hosts)
+    cycle = tuple(hosts)
+    start = min(range(len(cycle)), key=lambda i:
+                tuple((w.name, r) for w,r in cycle[i:] + cycle[:i]))
+    return cycle[start:] + cycle[:start]
+
+
+def _regions(hosts, poly, matrix, inverse, level, walls, preferred=None, preferred_floor=None):
+    from .floor_partition_graph import connected_rooms
+    faces = connected_rooms(hosts,poly,matrix,inverse,level,walls)
+    if faces:
+        roots = [Region([(w,r) for w,r,_,_ in spans], [a for _,_,a,_ in spans],
+                        spans=spans) for spans in faces]
+        roots.sort(key=lambda node: (-abs(area_at_origin(node.ring)),
+                                    tuple(sorted(w.name for w in node.key))))
+        if preferred is not None:
+            root = next((node for node in roots if node.identity == preferred),None)
+            if root is None:
+                subset = _refined_rooms(preferred_floor,roots)
+                if not subset:
+                    raise ValueError('The existing primary room no longer has its original set of walls. No rooms were merged or deleted.')
+                root = subset[0]
+                for candidate in subset:
+                    candidate.source = preferred_floor
+            roots.remove(root)
+            roots.insert(0,root)
+    else:
+        if preferred is not None:
+            raise ValueError('An existing wall partition is no longer closed. No rooms were merged or deleted.')
+        roots = [Region(hosts,poly)]
+    host_set = set().union(*(r.key for r in roots))
     inner = []
     low = tuple(min(p[i] for p in poly) for i in (0,1))
     high = tuple(max(p[i] for p in poly) for i in (0,1))
@@ -132,18 +270,22 @@ def _regions(hosts, poly, inverse, level, walls):
     inner.sort(key=lambda node: (-abs(area_at_origin(node.ring)),
                                 tuple(sorted(w.name for w in node.key))))
     for i, child in enumerate(inner):
-        parent = root
+        parents = [node for node in roots if inside(node.ring,child.ring[0])
+                   and not crosses(node.ring,child.ring)]
+        if len(parents)!=1:
+            raise ValueError('An interior room touches or crosses a connected partition. No floors were changed.')
+        parent = parents[0]
         for other in inner[:i]:
             if crosses(child.ring,other.ring):
                 raise ValueError('Interior wall loops touch or cross. No floors were changed.')
             if inside(other.ring,child.ring[0]):
                 parent = other
         parent.children.append(child)
-    return root, inner
+    return roots[0], roots[1:]+inner, roots[1:]
 
 
-def plan_regions(hosts, poly, inverse, level, walls):
-    return _regions(hosts,poly,inverse,level,walls)
+def plan_regions(hosts, poly, matrix, inverse, level, walls):
+    return _regions(hosts,poly,matrix,inverse,level,walls)
 
 
 def make_slab(name, poly, top, base, source, index, *, holes):
@@ -209,7 +351,93 @@ def _read(floor, scene):
     return hosts,rings,top,base,index
 
 
-def _assert_other_slabs_clear(context, known, plan, inverse, level):
+def _overlap_area(a, b):
+    """Measure overlap, including coincident edges and containment."""
+    ra, rb = a[0], b[0]
+    for i in range(2):
+        if (min(max(p[i] for p in ra),max(p[i] for p in rb))
+                - max(min(p[i] for p in ra),min(p[i] for p in rb))) <= outlines.SHAPE_EPS:
+            return 0.
+    points, constraints = [], []
+    origin = ra[0]
+    for ring in (*a,*b):
+        offset = len(points)
+        points.extend(v-origin for v in ring)
+        constraints.extend((offset+i,offset+(i+1) % len(ring)) for i in range(len(ring)))
+    xy, _, triangles, _, _, _ = delaunay_2d_cdt(
+        points,constraints,[],0,outlines.SHAPE_EPS/5)
+    def filled(rings,p):
+        return inside(rings[0],p) and not any(inside(h,p) for h in rings[1:])
+    overlap = 0.
+    for i,j,k in triangles:
+        p,q,r = xy[i],xy[j],xy[k]
+        center = (p+q+r)/3 + origin
+        if filled(a,center) and filled(b,center):
+            overlap += abs((q-p).cross(r-p))/2
+    return overlap
+
+
+def _positive_overlap(a,b):
+    return _overlap_area(a,b) > outlines.SHAPE_EPS
+
+
+def _refined_rooms(existing, possible):
+    saved = existing.get(DATUM,())
+    if len(saved)<6 or len(saved)%2:
+        return []
+    old = [Vector(saved[i:i+2]) for i in range(0,len(saved),2)]
+    old_area = abs(area_at_origin(old))
+    tolerance = max(outlines.SHAPE_EPS,old_area*1e-5)
+    found = []
+    for candidate in possible:
+        if not candidate.spans:
+            continue
+        size = abs(area_at_origin(candidate.ring))
+        overlap = _overlap_area([old],[candidate.ring])
+        if overlap>tolerance and abs(overlap-size)<=tolerance:
+            found.append((size,candidate))
+    # Movement, removal, merges, and unclear assignments do not destroy the
+    # finishes of existing rooms. Only a geometric refinement is inherited.
+    if not found or abs(sum(size for size,_ in found)-old_area)>tolerance:
+        return []
+    return [node for size,node in sorted(found,key=lambda row:-row[0])]
+
+
+def _adopt_independent_rooms(context, known, plan, inverse, level):
+    """Reuse exact legacy/Add Floor room slabs instead of duplicating them."""
+    candidates = {node.key:node for node in plan if node.obj is None and not node.spans}
+    if not candidates:
+        return
+    for obj in sorted(context.view_layer.objects,key=lambda item:item.name):
+        if (obj in known or not outlines.selected_floor(obj) or obj.mode != 'OBJECT'
+                or any(key in obj for key in (ROOT, HOLES, ENVELOPE))
+                or obj.get(outlines.KIND) not in (None, outlines.LINKED)):
+            continue
+        try:
+            poly,top,_,_ = outlines._supported_mesh(obj)
+            matrix,_,other_level = outlines.floor_plane(obj,top)
+            if abs(other_level-level)>outlines.LEVEL_EPS:
+                continue
+            if obj.get(outlines.KIND) == outlines.LINKED:
+                hosts = outlines._read_saved_host(obj,context.scene,poly)
+            else:
+                walls = [edge for o in context.view_layer.objects if (edge:=outlines.wall_edge(o))]
+                hosts = outlines._legacy_hosts(obj,poly,top,walls)
+            node = candidates.get(frozenset(wall for wall,_ in hosts))
+            if node is None or node.obj is not None:
+                continue
+            existing = [(inverse @ matrix @ Vector((*p,top))).xy for p in poly]
+            source = outlines._new_outline(hosts,inverse,level)
+            if not outlines._same_ring(source,node.ring,outlines.CLOSE) or not outlines._same_ring(
+                    existing,node.ring,outlines.CLOSE):
+                continue
+        except (ValueError, TypeError, RuntimeError):
+            continue
+        node.obj = obj
+        known.add(obj)
+
+
+def _assert_other_slabs_clear(context, known, proposed, inverse, level):
     """Never lay down a second floor over an already covered independent region."""
     for obj in context.view_layer.objects:
         if not outlines.selected_floor(obj) or obj in known:
@@ -222,20 +450,8 @@ def _assert_other_slabs_clear(context, known, plan, inverse, level):
         if abs(other_level-level)>outlines.LEVEL_EPS:
             continue
         rings = [[(inverse @ matrix @ Vector((*p,top))).xy for p in ring] for ring in rings]
-        for node in plan:
-            other = rings[0]
-            # Shared corner/edge is not an overlap. A substantial part of the
-            # other slab inside a new region (or vice versa) is not guessed.
-            def strictly_in(shape,p):
-                return inside(shape,p) and outlines.floor_divider.snap(shape,p)[0]>outlines.SHAPE_EPS
-            if (outlines._same_ring(node.ring,other,outlines.CLOSE)
-                or any(strictly_in(node.ring,p) for p in other)
-                or any(strictly_in(other,p) and not any(inside(hole,p) for hole in rings[1:])
-                       for p in node.ring)
-                or any((b-a).cross(c-a)*(b-a).cross(d-a)<-outlines.SHAPE_EPS**2
-                       and (d-c).cross(a-c)*(d-c).cross(b-c)<-outlines.SHAPE_EPS**2
-                       for a,b in edges(node.ring) for c,d in edges(other))):
-                raise ValueError(f'{obj.name} already covers part of an enclosed room. No overlapping floor was created.')
+        if any(_positive_overlap(shape,rings) for shape in proposed):
+            raise ValueError(f'{obj.name} already covers part of an enclosed room. No overlapping floor was created.')
 
 
 def _root_space_to_floor(rings, root_matrix, obj, top):
@@ -252,43 +468,73 @@ def update_family(context, selected, *, initial=None):
     if root.mode != 'OBJECT':
         raise ValueError('Finish editing the surrounding floor first.')
     scene = context.scene
+    envelope = root.get(ENVELOPE)
+    partitioned = bool(envelope)
     if initial:
         hosts,poly,plan = initial
         _,top,_,_ = outlines._supported_mesh(root,multiring=True)
     else:
-        hosts,_,top,_,_ = _read(root,scene)
+        root_faces,_,top,_,_ = _read(root,scene)
+        hosts = ([(item.get('wall'),bool(item.get('reversed')))
+                  for _,item in sorted(envelope.items())] if partitioned else root_faces)
+        if any(not wall or wall.name not in scene.objects for wall,_ in hosts):
+            raise ValueError('A source wall of the original floor was removed. No floors were changed.')
         walls = [edge for obj in context.view_layer.objects if (edge:=outlines.wall_edge(obj))]
     root_matrix, inverse, level = outlines.floor_plane(root,top)
     if not initial:
         poly = outlines._new_outline(hosts,inverse,level)
-    root_node,inner = plan if initial else _regions(hosts,poly,inverse,level,walls)
+    root_node,inner,peers = plan if initial else _regions(
+        hosts,poly,root_matrix,inverse,level,walls,
+        preferred=_identity(root_faces,partial=True) if partitioned else None,
+        preferred_floor=root if partitioned else None)
     root_node.obj = root
-    planned = {node.key:node for node in inner}
+    planned = {node.identity:node for node in inner}
+    if len(planned)!=len(inner):
+        raise ValueError('The walls do not uniquely identify separate rooms. No floors were changed.')
     known = {root}
+    missing = []
     for obj in context.scene.objects:
         if obj.get(ROOT)!=root:
             continue
         if obj.name not in context.view_layer.objects or not outlines.selected_floor(obj):
             raise ValueError('A floor in this room group is excluded or read-only. No floor was changed.')
         existing_hosts,_,_,_,_ = _read(obj,scene)
-        key = frozenset(wall for wall,_ in existing_hosts)
-        if key not in planned or planned[key].obj is not None:
+        key = _identity(existing_hosts,partial=bool(obj.get(ENVELOPE)))
+        if key not in planned:
+            missing.append(obj)
+        elif planned[key].obj is not None or (planned[key].source and planned[key].source!=obj):
             raise ValueError('An existing room no longer has a unique closed wall loop. No rooms were merged or deleted.')
-        planned[key].obj = obj
+        else:
+            planned[key].obj = obj
+            known.add(obj)
+    for obj in missing:
+        subset = _refined_rooms(obj,[n for n in peers if n.obj is None and n.source is None])
+        if not subset:
+            raise ValueError('An existing room no longer has a unique closed wall loop. No rooms were merged or deleted.')
+        subset[0].obj = obj
+        for node in subset:
+            node.source = obj
         known.add(obj)
-    new_nodes = [node for node in inner if node.obj is None]
-    if new_nodes:
-        _assert_other_slabs_clear(context,known,new_nodes,inverse,level)
+    _adopt_independent_rooms(context,known,inner,inverse,level)
 
     staged = []
     created = []
     applied = []
     data = []
     warnings = []
+    proposed = []
+    all_rings = []
     def stage(node, inheritance):
-        obj = node.obj or inheritance
+        obj = node.obj or node.source or inheritance
         old_rings,t,b,idx = outlines._supported_mesh(obj,multiring=True)
-        outer = outlines._physical_ring(node.hosts,node.ring,root_matrix,level,scene,warnings=warnings)
+        if node.spans:
+            from .floor_thresholds import physical_floor_ring
+            outer = physical_floor_ring(
+                [(wall,a,b) for wall,_,a,b in node.spans],root_matrix,level,scene,
+                warnings=warnings,partial=True)
+            outlines._validate_ring(outer)
+        else:
+            outer = outlines._physical_ring(node.hosts,node.ring,root_matrix,level,scene,warnings=warnings)
         holes = [outlines._physical_ring(child.hosts,child.ring,root_matrix,level,scene,interior=False,warnings=warnings)
                  for child in node.children]
         if any(crosses(outer,hole) or not all(inside(outer,p) for p in hole) for hole in holes):
@@ -296,17 +542,27 @@ def update_family(context, selected, *, initial=None):
         if any(crosses(hole,sibling) or inside(sibling,hole[0]) or inside(hole,sibling[0])
                for i,hole in enumerate(holes) for sibling in holes[:i]):
             raise ValueError('Room boundaries overlap after accounting for wall faces. No floors were changed.')
-        outer,*holes = _root_space_to_floor([outer,*holes],root_matrix,obj,top)
+        datum_rings = [outer,*holes]
+        all_rings.append(datum_rings)
+        outer,*holes = _root_space_to_floor(datum_rings,root_matrix,obj,top)
         mesh = None
         if node.obj is None or not outlines._same_ring(old_rings[0],outer) or not _match_holes(old_rings[1:],holes):
             mesh = outlines._build_mesh(obj,outer,t,b,idx,holes=holes)
             staged.append(mesh)
+            proposed.append(datum_rings)
         data.append((node,obj,outer,holes,mesh))
         for child in node.children:
             stage(child,obj)
 
     try:
         stage(root_node,root)
+        for peer in peers:
+            stage(peer,root)
+        if proposed:
+            _assert_other_slabs_clear(context,known,proposed,inverse,level)
+            for i,shape in enumerate(all_rings):
+                if any(_positive_overlap(shape,other) for other in all_rings[:i]):
+                    raise ValueError('The proposed physical room floors overlap. No floors were changed.')
         for node,source,outer,holes,mesh in data:
             if node.obj is not None or mesh is None:
                 continue
@@ -343,6 +599,16 @@ def update_family(context, selected, *, initial=None):
         obj[HOLES] = {f'{i:04d}':outlines._ring_dump(ring) for i,ring in enumerate(holes)}
         if obj!=root:
             obj[ROOT] = root
+        if node.spans:
+            obj[ENVELOPE] = {f'{i:04d}':{'wall':wall,'reversed':rev}
+                             for i,(wall,rev) in enumerate(hosts)}
+            spans = [_wall_interval(wall,a,b,root_matrix,top) for wall,_,a,b in node.spans]
+            obj[SPAN_X] = {f'{i:04d}':{'start':a,'end':b} for i,(a,b) in enumerate(spans)}
+            obj[DATUM] = outlines._ring_dump(node.ring)
+        else:
+            for key in (ENVELOPE,SPAN_X,DATUM):
+                if key in obj:
+                    del obj[key]
     for _,old,_ in applied:
         if old.users==0:
             bpy.data.meshes.remove(old)

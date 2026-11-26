@@ -12,7 +12,7 @@ from mathutils import Vector
 from mathutils.geometry import intersect_line_line_2d
 
 from .. import hb_assets, hb_types, hb_utils, paint_palettes
-from . import baseboard_perimeter, room_paint
+from . import baseboard_perimeter, room_paint, shower_trim
 
 
 CASING = 'FZM_DOOR_CASING'
@@ -655,10 +655,10 @@ def _wall_doors(wall):
             if door.get('IS_ENTRY_DOOR_BP') and not door.get('IS_WINDOW_BP'))
 
 
-def wall_spans(obj, origin, end, inward, level, height, depsgraph):
+def wall_spans(obj, origin, end, inward, level, height, depsgraph, tile_panels=()):
     direction = (end - origin).normalized()
     length = (end - origin).length
-    gaps = []
+    gaps = list(shower_trim.floor_gaps(tile_panels, origin, direction, inward, length, level))
     for door in _wall_doors(obj):
         cage = hb_types.GeoNodeCage(door)
         if not all(cage.has_input(name) for name in ('Dim X', 'Dim Y', 'Dim Z')):
@@ -714,12 +714,13 @@ def baseboard_geometry(context, floor, walls, profile, height, thickness, *, all
     ]
     vertices, faces = [], []
     inverse = floor.matrix_world.inverted()
+    tiled = shower_trim.panels_by_wall(context)
     for i, (wall, _, _, normal) in enumerate(edges):
         j = (i + 1) % len(corners)
         start, end = corners[i], corners[j]
         direction = (end - start).normalized()
         length = (end - start).length
-        for left, right in wall_spans(wall, start, end, normal, level, height, depsgraph):
+        for left, right in wall_spans(wall, start, end, normal, level, height, depsgraph, tiled.get(wall, ())):
             if right - left < CUT_TOLERANCE:
                 continue
             rings = [[], []]
@@ -741,9 +742,10 @@ def baseboard_geometry(context, floor, walls, profile, height, thickness, *, all
 def automatic_baseboard_geometry(context, floor, profile, height, thickness, *, allow_empty=False):
     vertices, faces, walls = [], [], set()
     depsgraph = context.evaluated_depsgraph_get()
+    tiled = shower_trim.panels_by_wall(context)
 
     def spans(obj, origin, end, inward, level, height):
-        return wall_spans(obj, origin, end, inward, level, height, depsgraph)
+        return wall_spans(obj, origin, end, inward, level, height, depsgraph, tiled.get(obj, ()))
 
     for _, rings in baseboard_perimeter.board_sections(
         context, floor, PROFILES[profile], height, thickness, spans, walls,
@@ -795,8 +797,8 @@ def _same_baseboard_geometry(before, after, tolerance=1e-5):
 def refresh_wall_baseboards(context, walls):
     """Refresh only existing trims attached to a changed Builder wall.
 
-    Called inside the committing operator so the door and affected trim share
-    its undo step. Saved manual trims keep their wall list and profile.
+    Called inside the committing operator so the wall finish or door and its trim
+    share one undo step. Saved manual trims keep their wall list and profile.
     """
     walls = {wall for wall in walls if wall and wall.get('IS_WALL_BP')}
     if not walls:

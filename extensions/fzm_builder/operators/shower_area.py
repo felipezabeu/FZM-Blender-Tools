@@ -8,7 +8,9 @@ from mathutils import Vector
 
 from .. import hb_types
 from .floor_finish import create_material
-from .tile_shader import PATTERNS, TileSpec, base_material, dispose_if_unused, tile_material, validate
+from .tile_catalog import FINISH_OPTIONS, finish_entry
+from .wall_tile_shell import build_shell
+from .tile_shader import PATTERNS, MOSAIC_SIZE, SHAPES, TileSpec, base_material, dispose_if_unused, reset_mosaic_size, tile_material, validate
 
 AREA = 'FZM_SHOWER_AREA'
 PART = 'FZM_SHOWER_TILE_FACE'
@@ -19,8 +21,22 @@ SPAN_START = 'fzm_shower_span_start_m'
 SPAN_END = 'fzm_shower_span_end_m'
 JOIN = .012
 SEPARATION = .0015
+LINING_THICKNESS = 'lining_thickness'
+DEFAULT_THICKNESS = .0127
+MAX_THICKNESS = .15
 PLANAR = .0005
 EPS = 1e-7
+
+
+def lining_thickness(options):
+    """Older areas keep their original thin sheet until deliberately edited."""
+    return float(options.get(LINING_THICKNESS, 0.))
+
+
+def face_offset(thickness):
+    # The solid lining starts flush to the wall. Keep the historical render
+    # separation only for a zero-thickness visual sheet.
+    return thickness if thickness else SEPARATION
 
 
 def controller_for(obj):
@@ -52,18 +68,36 @@ def _ordered_path(objects, order=None):
     level = walls[0][1].z
     if any(abs(w[1].z - level) > PLANAR for w in walls):
         raise ValueError("The walls must be on one level.")
-    points, links, edges = [], [], {}
-    def vertex(p):
-        for i, previous in enumerate(points):
-            if (previous - p).length <= JOIN:
+    points, links, edges, endpoints = [], [], {}, []
+    def cap_contact(p, row, other, endpoint):
+        # Builder can snap a branch to either *face* of a wall, leaving its
+        # line endpoint a full wall-thickness from the receiving wall's datum.
+        # Only accept the physical end caps here, never a mid-wall virtual T.
+        axis = (row[2]-row[1]).xy.normalized()
+        across = row[3]
+        other_axis = (other[2]-other[1]).xy.normalized()
+        det = axis.cross(across)
+        if abs(axis.cross(other_axis)) < .25 or abs(det) <= EPS:
+            return False
+        delta = p.xy-endpoint.xy
+        along = delta.cross(across)/det
+        through = axis.cross(delta)/det
+        slack = JOIN/across.length
+        return abs(along) <= JOIN and -slack <= through <= 1.+slack
+
+    def vertex(p,row):
+        for i,(previous,other) in enumerate(endpoints):
+            if ((previous-p).length <= JOIN or cap_contact(p,other,row,previous)
+                    or cap_contact(previous,row,other,p)):
                 return i
         points.append(p.copy())
+        endpoints.append((points[-1],row))
         links.append([])
         return len(points)-1
 
     for row in walls:
         _, a, b, _, _ = row
-        i, j = vertex(a), vertex(b)
+        i, j = vertex(a,row), vertex(b,row)
         if i == j or (i,j) in edges or (j,i) in edges:
             raise ValueError("The selected walls overlap or collapse.")
         links[i].append(j)
@@ -93,7 +127,7 @@ def _ordered_path(objects, order=None):
     return path, level
 
 
-def _finish_lines(path):
+def _finish_lines(path, offset=SEPARATION):
     axes = [(b-a).xy.normalized() for _,a,b in path]
     turns = [a.cross(b) for a,b in zip(axes, axes[1:])]
     if (not turns or any(abs(t) < .25 for t in turns)
@@ -107,13 +141,13 @@ def _finish_lines(path):
         actual_offset = plane-a.xy
         lines.append((row, plane, b.xy+actual_offset, direction, inward))
     def shifted(line):
-        return line[1] + SEPARATION * line[4]
+        return line[1] + offset * line[4]
     corners = [shifted(lines[0])]
     for prev, row in zip(lines,lines[1:]):
         a,b=shifted(prev),shifted(row)
         d,e=prev[3],row[3]
         corners.append(a + d * (b-a).cross(e)/d.cross(e))
-    corners.append(lines[-1][2] + SEPARATION * lines[-1][4])
+    corners.append(lines[-1][2] + offset * lines[-1][4])
     if any((b-a).dot(line[3]) < .04 for a,b,line in zip(corners, corners[1:], lines)):
         raise ValueError("Wall thickness or angle leaves no usable space at a corner.")
     return lines, corners
@@ -224,12 +258,15 @@ def _sample_wall_face(obj, plane, a, direction, inward, level, bottom, height, p
     return vertices, faces, uv
 
 
-def panel_data(context, objects, heights, bottom, order=None):
+def panel_data(context, objects, heights, bottom, order=None, *, thickness=0.):
     if not all(isfinite(h) and h >= .05 for h in heights) or not isfinite(bottom) or bottom < 0:
         raise ValueError("Lining heights must be positive and start above the wall base.")
     context.view_layer.update()
     path, level = _ordered_path(objects, order)
-    lines,corners = _finish_lines(path)
+    if not isfinite(thickness) or not 0. <= thickness <= MAX_THICKNESS:
+        raise ValueError("Tile thickness must be between 0 and 150 mm.")
+    lines,corners = _finish_lines(path,face_offset(thickness))
+    back_corners = _finish_lines(path, 0.)[1] if thickness else None
     dg=context.evaluated_depsgraph_get()
     phase=0.
     result=[]
@@ -242,14 +279,21 @@ def panel_data(context, objects, heights, bottom, order=None):
         length = (b-a).dot(d)
         span = wall_span(line, a, b)
         vertices,faces,uv = _sample_wall_face(wall,plane,a,d,n,level,bottom,maximum,phase,span,dg)
+        if thickness:
+            shifts = ((back_corners[i]-a).dot(d), (back_corners[i+1]-b).dot(d))
+            vertices,faces,uv = build_shell(vertices,faces,uv,d,n,thickness,phase,length,*shifts)
+        else:
+            uv = [tuple(uv[index] for index in face) for face in faces]
         result.append((wall,phase,length,vertices,faces,uv,span))
         # Use the uncropped length so the grout on other faces stays put.
         phase += length
     return result, (*corners[0],level)
 
 
-def _base_finish(name, color, filepath, previous=None):
-    if not filepath:
+def _base_finish(name, color, filepath, previous=None, finish='CUSTOM'):
+    if finish != 'CUSTOM':
+        material=create_material(finish_entry(finish))
+    elif not filepath:
         material=create_material(dict(name=name,color=color))
     else:
         p=Path(bpy.path.abspath(filepath))
@@ -267,15 +311,16 @@ def _base_finish(name, color, filepath, previous=None):
     return material
 
 
-def _make_panel(name, position, data, material):
+def _make_panel(name, position, data, material, *, thickness=0.):
     wall,phase,length,vertices,faces,uv,span=data
     mesh=bpy.data.meshes.new(name)
     try:
         mesh.from_pydata([tuple(Vector(p)-Vector(position)) for p in vertices],[],faces)
         mesh.update()
         uv_layer=mesh.uv_layers.new(name='UVMap')
-        for loop in mesh.loops:
-            uv_layer.data[loop.index].uv=uv[loop.vertex_index]
+        for polygon, coords in zip(mesh.polygons, uv):
+            for loop, point in zip(polygon.loop_indices, coords):
+                uv_layer.data[loop].uv=point
         mesh.materials.append(material)
         obj=bpy.data.objects.new(name,mesh)
     except Exception:
@@ -286,6 +331,7 @@ def _make_panel(name, position, data, material):
     obj['fzm_shower_length_m']=length
     obj['fzm_shower_wall']=wall
     obj[SPAN_START], obj[SPAN_END] = span
+    obj[LINING_THICKNESS] = thickness
     return obj
 
 
@@ -310,15 +356,16 @@ def rebuild_panels(context, controller):
     options = controller[OPTIONS]
     old = [o for o in controller.children if o.get(PART)]
     materials = {o['fzm_shower_wall']: o.data.materials[0] for o in old}
+    thickness = lining_thickness(options)
     panels, position = panel_data(context, objects, options['heights'],
-                                  options['bottom'], order=objects)
+                                  options['bottom'], order=objects, thickness=thickness)
     collection = controller.users_collection[0] if controller.users_collection else context.collection
     transform = controller.matrix_world.inverted()
     drafts = []
     try:
         for i, panel_data_row in enumerate(panels):
-            panel = _make_panel(f'Shower Tile Face {i + 1}', position, panel_data_row,
-                                materials[panel_data_row[0]])
+            panel = _make_panel(f'Wall Tile Face {i + 1}', position, panel_data_row,
+                                materials[panel_data_row[0]], thickness=thickness)
             drafts.append(panel)
             for vertex in panel.data.vertices:
                 vertex.co = transform @ (vertex.co + Vector(position))
@@ -357,27 +404,31 @@ def remove_controller(context, controller):
     bpy.data.objects.remove(controller,do_unlink=True)
 
 
-def create_or_update(context, objects, heights, bottom, spec, color, filepath, existing=None):
+def create_or_update(context, objects, heights, bottom, spec, color, filepath, existing=None, *, finish='CUSTOM', thickness=None):
+    if thickness is None:
+        thickness = lining_thickness(existing[OPTIONS]) if existing else DEFAULT_THICKNESS
+    active_photo = filepath if finish == 'CUSTOM' else ''
     validate(spec)
     selected = set(objects)
     for obj in context.scene.objects:
         if obj != existing and obj.get(AREA) and selected.intersection(obj.get(SOURCE, {}).values()):
-            raise ValueError("A selected wall already belongs to a Shower Area. Select its tile face to edit.")
+            raise ValueError("A selected wall already belongs to a wall tile set. Select its tile face to edit.")
     # Evaluate all hosts and validate geometry before touching existing panels.
-    panels, position=panel_data(context,objects,heights,bottom,order=objects if existing else None)
+    panels, position=panel_data(context,objects,heights,bottom,order=objects if existing else None,
+                                thickness=thickness)
     previous=next((o.data.materials[0] for o in existing.children
                    if o.get(PART) and o.data.materials),None) if existing else None
-    source=_base_finish('Shower tile',color,filepath,base_material(previous))
+    source=_base_finish('Shower tile',color,active_photo,base_material(previous),finish)
     material_name = None
     drafts = []
     controller = existing
     try:
-        material = tile_material(source, spec, one_image_per_tile=bool(filepath))
+        material = tile_material(source, spec, one_image_per_tile=bool(active_photo))
         material_name = material.name
         for i, data in enumerate(panels):
-            drafts.append(_make_panel(f'Shower Tile Face {i+1}', position, data, material))
+            drafts.append(_make_panel(f'Wall Tile Face {i+1}', position, data, material, thickness=thickness))
         if controller is None:
-            controller=bpy.data.objects.new('Shower Area',None)
+            controller=bpy.data.objects.new('Wall Tiles',None)
             controller.empty_display_type='PLAIN_AXES'
             controller.empty_display_size=.17
             controller[AREA]=True
@@ -398,10 +449,11 @@ def create_or_update(context, objects, heights, bottom, spec, color, filepath, e
             collection.objects.link(panel)
             panel.parent=controller
         from .shower_fixtures import sync_fixture_finish
-        sync_fixture_finish(context, controller, drafts, spec)
+        options={'tile':asdict(spec),'heights':list(heights),'bottom':bottom,
+                 'tile_color':tuple(color),'filepath':filepath,'finish':finish,LINING_THICKNESS:thickness}
+        sync_fixture_finish(context, controller, drafts, spec, new_options=options, previous_panels=old)
         controller[SOURCE]={str(i):row[0] for i,row in enumerate(panels)}
-        controller[OPTIONS]={'tile':asdict(spec),'heights':list(heights),'bottom':bottom,
-                             'tile_color':tuple(color),'filepath':filepath}
+        controller[OPTIONS]=options
         for panel in old:
             remove_panel(panel)
     except Exception:
@@ -417,17 +469,32 @@ def create_or_update(context, objects, heights, bottom, spec, color, filepath, e
     return controller
 
 
+def refresh_baseboards(context, walls, report=None):
+    from .finishes import refresh_wall_baseboards
+    failures = refresh_wall_baseboards(context, walls)
+    if report is not None:
+        for failure in failures:
+            report({'WARNING'}, f'Could not refresh baseboards: {failure}')
+    return failures
+
+
 class FZM_OT_shower_area(bpy.types.Operator):
     bl_idname='fzm_builder.shower_area'
-    bl_label='Shower Area'
+    bl_label='Wall Tiles'
     bl_description='Tile 2 or 3 connected Builder walls, preserving joints at corners and existing cutouts'
     bl_options={'UNDO'}
 
-    remove: bpy.props.BoolProperty(name='Remove This Shower Area')
+    remove: bpy.props.BoolProperty(name='Remove This Wall Tile Set')
+    lining: bpy.props.FloatProperty(name='Lining Thickness', unit='LENGTH', subtype='DISTANCE',
+        default=DEFAULT_THICKNESS, min=0., max=MAX_THICKNESS, precision=4,
+        description='Model the tile depth from the wall into the room (zero keeps a thin visual finish)')
     height_1: bpy.props.FloatProperty(name='Wall 1 Lining Height',unit='LENGTH',default=2.15,min=.05,max=10.)
     height_2: bpy.props.FloatProperty(name='Wall 2 Lining Height',unit='LENGTH',default=2.15,min=.05,max=10.)
     height_3: bpy.props.FloatProperty(name='Wall 3 Lining Height',unit='LENGTH',default=2.15,min=.05,max=10.)
     bottom: bpy.props.FloatProperty(name='Start Above Wall Base',unit='LENGTH',default=0.,min=0.,max=10.)
+    tile_shape: bpy.props.EnumProperty(name='Tile Shape',items=SHAPES,default='RECTANGLE',update=reset_mosaic_size)
+    mosaic_size: bpy.props.FloatProperty(name='Mosaic Piece Size',unit='LENGTH',min=.01,max=10.,default=.0508)
+    tile_finish: bpy.props.EnumProperty(name='Tile Finish',items=FINISH_OPTIONS,default='CUSTOM')
     tile_width: bpy.props.FloatProperty(name='Tile Width',unit='LENGTH',default=.6096,min=.01,max=10.)
     tile_height: bpy.props.FloatProperty(name='Tile Height',unit='LENGTH',default=.3048,min=.01,max=10.)
     grout: bpy.props.FloatProperty(name='Grout Width',unit='LENGTH',default=.003,min=0.,max=.10)
@@ -462,11 +529,19 @@ class FZM_OT_shower_area(bpy.types.Operator):
         if controller:
             opt=controller[OPTIONS]
             self.height_1,self.height_2,self.height_3=opt['heights']
+            self.lining=lining_thickness(opt)
             self.bottom,self.filepath,self.tile_color=opt['bottom'],opt['filepath'],opt['tile_color']
             spec=opt['tile']
-            self.tile_width,self.tile_height=spec['width'],spec['height']
+            self.tile_finish=opt.get('finish','CUSTOM')
+            self.tile_shape=spec.get('shape','RECTANGLE')
+            if self.tile_shape == 'RECTANGLE':
+                self.tile_width,self.tile_height=spec['width'],spec['height']
+            else:
+                self.mosaic_size=spec['width']
             self.grout,self.pattern,self.angle=spec['grout'],spec['pattern'],spec['angle']
             self.offset_u,self.offset_v,self.grout_color=spec['offset_u'],spec['offset_v'],spec['color']
+        elif not self.properties.is_property_set('lining'):
+            self.lining=DEFAULT_THICKNESS
         return context.window_manager.invoke_props_dialog(self,width=440)
 
     def draw(self,context):
@@ -489,9 +564,19 @@ class FZM_OT_shower_area(bpy.types.Operator):
             layout.label(text=f'Wall {i+1}: {row[0].name}')
             layout.prop(self,f'height_{i+1}')
         layout.prop(self,'bottom')
+        layout.prop(self,'lining')
         col=layout.column(align=True)
-        for name in ('pattern','tile_width','tile_height','grout','angle','offset_u','offset_v','grout_color','tile_color','filepath'):
+        col.prop(self,'tile_shape')
+        if self.tile_shape == 'RECTANGLE':
+            for name in ('pattern','tile_width','tile_height'):
+                col.prop(self,name)
+        else:
+            col.prop(self,'mosaic_size')
+        for name in ('grout','angle','offset_u','offset_v','grout_color','tile_finish'):
             col.prop(self,name)
+        if self.tile_finish == 'CUSTOM':
+            col.prop(self,'tile_color')
+            col.prop(self,'filepath')
         layout.label(text='Joints follow the continuous inner wall path.')
         layout.label(text='Use Wall Divider on one wall or tile face to limit its width.')
         layout.label(text='View in Material Preview or Rendered mode.')
@@ -499,19 +584,25 @@ class FZM_OT_shower_area(bpy.types.Operator):
     def execute(self,context):
         controller=controller_for(context.active_object)
         if self.remove and controller:
+            walls = tuple(controller.get(SOURCE, {}).values())
             remove_controller(context, controller)
+            refresh_baseboards(context, walls, self.report)
             return {'FINISHED'}
         if self.remove:
             return {'CANCELLED'}
         try:
             walls=self.targets(context,controller)
-            spec=TileSpec(self.pattern,self.tile_width,self.tile_height,self.grout,self.angle,
-                          self.offset_u,self.offset_v,tuple(self.grout_color))
+            size = self.mosaic_size if self.properties.is_property_set('mosaic_size') else MOSAIC_SIZE.get(self.tile_shape, .0508)
+            dimensions = (self.tile_width, self.tile_height) if self.tile_shape == 'RECTANGLE' else (size, size)
+            spec=TileSpec(self.pattern,*dimensions,self.grout,self.angle,
+                          self.offset_u,self.offset_v,tuple(self.grout_color),self.tile_shape)
             controller=create_or_update(context,walls,(self.height_1,self.height_2,self.height_3),
-                self.bottom,spec,tuple(self.tile_color),self.filepath,controller)
+                self.bottom,spec,tuple(self.tile_color),self.filepath,controller,finish=self.tile_finish,
+                thickness=self.lining if self.properties.is_property_set('lining') else None)
         except (ValueError, RuntimeError, OSError) as err:
             self.report({'WARNING'},str(err))
             return {'CANCELLED'}
+        refresh_baseboards(context, walls, self.report)
         for obj in context.selected_objects:
             obj.select_set(False)
         controller.select_set(True)

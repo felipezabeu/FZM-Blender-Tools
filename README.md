@@ -7,8 +7,22 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 | Extensão | Versão | Função |
 |---|---:|---|
 | FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
-| FZM Builder | 5.1.14 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.16 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.16
+
+- **Update Floor Outline** divide o piso entre áreas fechadas também quando a divisória encosta em outra parede. Continua sem sobrescrever um **Divide Floor** manual.
+- **Room Layout → Walls → Divide Wall** divide a parede longa na junção em T entre duas paredes selecionadas. O corte é explícito e não acontece enquanto se desenha. Guarde paredes de projeto em cópia antes de testar. O comando recusa cortes através de vãos e paredes com revestimentos ou anexos que não podem ser transferidos com segurança.
+- Ao arrastar a alça central de uma parede, trave em **X** ou **Y**, aponte para o lado desejado, digite só a distância na unidade do projeto e confirme com **Enter**. **Esc** cancela.
+- **Wall Tiles** é o novo nome da **Shower Area**. Novos revestimentos têm espessura ajustável, inicialmente 1/2″. Revestimentos antigos mantêm a espessura anterior até que você altere o campo Lining Thickness.
+- Rodapés existentes interrompem só no trecho em que o revestimento chega ao piso, respeitando **Wall Divider**, guarnições e a face oposta.
+
+### FZM Builder 5.1.15
+
+- **Floor Finish → Catalog** e **Shower Area → Tile Finish** têm seis acabamentos procedurais: branco com veios cinza, cinza, branco com veios bege, terrazzo claro, branco e cinza escuro. O catálogo não inclui fotos ou materiais oficiais da Besso.
+- **Floor Tile Layout → Tile Shape** e **Shower Area → Tile Shape** separam formato e acabamento. Além do retangular há quadrado, hexagonal e penny round, com tamanho e juntas ajustáveis.
+- O piso aceita uma foto local em **Floor Finish → Local Image**. Na parede do box, escolha **Custom Color or Photo → Tile-Face Photo** para importar a face de uma peça. As imagens importadas são incorporadas ao salvar o projeto.
 
 ### FZM Builder 5.1.14
 

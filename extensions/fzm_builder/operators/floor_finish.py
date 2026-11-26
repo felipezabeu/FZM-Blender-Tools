@@ -10,6 +10,7 @@ import bpy
 from .floor_tiles import apply_floor_base_finish, floor_surface_indices, get_spec
 from .floor_wood import BOARD_DIMENSIONS, BOARD_LENGTH, BOARD_WIDTH, attach_board_shader
 from .tile_shader import base_material
+from .tile_catalog import TILE_FINISHES, attach_tile_finish, finish_entry
 
 
 DEFAULTS = (
@@ -18,6 +19,7 @@ DEFAULTS = (
     {"id": "grey_wood", "name": "Grey Wood (generic)", "color": (.34, .33, .31, 1), "grain": (.13, .135, .14, 1), "wood_boards": True},
     {"id": "neutral_tile", "name": "Neutral Porcelain (generic)", "color": (.58, .55, .49, 1)},
     {"id": "dark_stone", "name": "Dark Stone (generic)", "color": (.10, .105, .11, 1)},
+    *(finish_entry(key) for key in TILE_FINISHES),
 )
 # Blender must retain references to strings returned by dynamic enum callbacks.
 _enum_items = {}
@@ -127,6 +129,8 @@ def create_material(data):
             links.new(texture.outputs["Color"], pbr.inputs["Base Color"])
             material["fzm_image_repeat_m"] = (width, height)
             material["fzm_image_source_name"] = path.name
+        elif data.get("texture"):
+            attach_tile_finish(material, pbr, data)
         elif data.get("grain"):
             uv = nodes.new("ShaderNodeUVMap")
             uv.uv_map = "UVMap"
@@ -264,7 +268,7 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                     raise ValueError("Select a local image file.")
             else:
                 data = {"name": self.preset_name or "Solid Color", "color": list(self.color)}
-            if (data.get("image") or data.get("grain")) and "UVMap" not in obj.data.uv_layers:
+            if (data.get("image") or data.get("grain") or data.get("texture")) and "UVMap" not in obj.data.uv_layers:
                 raise ValueError("This floor needs the generated metric UVMap to use a texture.")
             material = create_material(data)
             apply_finish(obj, material)

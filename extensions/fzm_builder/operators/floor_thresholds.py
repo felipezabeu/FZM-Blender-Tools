@@ -151,7 +151,7 @@ def _physical_joint(first,second):
     return p,q
 
 
-def _safe_jamb_span(line, walls):
+def _safe_jamb_span(line, walls, *, partial=False):
     """Corner keep-out using all incident physical walls from either room side.
 
     A corner-spanning opening is unsafe to extend *on either side*: use the
@@ -168,7 +168,19 @@ def _safe_jamb_span(line, walls):
         d=(b.xy-a.xy).normalized()
         for corner,leading in ((line.a,True),(line.b,False)):
             if min((corner-a.xy).length,(corner-b.xy).length)>JOINT:
-                continue
+                if not partial:
+                    continue
+                # Logical T/X nodes on a long wall may be mid-edge, or the
+                # real branch ends at the host's offset face. Use the actual
+                # footprint plus their wall thickness, not only endpoints.
+                rel = corner-a.xy
+                v = rel.cross(d)
+                far = thickness.cross(d)
+                axis = rel.dot(d)
+                reach = line.thickness.length+JOINT
+                if not (min(0.,far)-JOINT<=v<=max(0.,far)+JOINT
+                        and -reach<=axis<=(b.xy-a.xy).length+reach):
+                    continue
             for pos in (line.a,line.a+line.thickness):
                 for other in (a.xy,a.xy+thickness):
                     point=_intersect(pos,line.tangent,other,d)
@@ -202,7 +214,7 @@ def _unambiguous(openings):
     return [group[0] for group in result if len(group)==1]
 
 
-def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, warnings=None):
+def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, warnings=None, partial=False):
     """Return floor-local XY from ordered (wall, datum start XY, datum end XY).
 
     ``level`` is the world Z of the slab top. A normal room ring uses
@@ -216,7 +228,7 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
     if len(edges)<3:
         raise ValueError('At least three physical wall edges are required.')
     doors=[list(dict.fromkeys(_cuts(w,scene))) for w,_,_ in edges]
-    if not any(doors):
+    if not partial and not any(doors):
         return datum
     world=[_vertices(floor_matrix,a,b) for _,a,b in edges]
     reference=world[0][0]
@@ -231,13 +243,18 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
             raise ValueError('A physical wall face could not be resolved for this floor.')
         p,q,depth=data
         same=min(max((a-p.xy).length,(b-q.xy).length),max((a-q.xy).length,(b-p.xy).length))
+        if partial:
+            axis=(q.xy-p.xy).normalized()
+            # A T junction may lie slightly beyond a partition's short end:
+            # that endpoint was placed against the thick host's actual face.
+            same=max(abs((v-p.xy).cross(axis)) for v in (a,b))
         if same>JOINT or abs(p.z-level)>LEVEL:
             raise ValueError('A floor edge is not aligned to its physical host wall.')
         d=(b-a).normalized()
         lines.append(_Line(wall,a,b,d,Vector((-d.y,d.x))*sign,depth))
     candidates=[[(door,item) for door in group if (item:=_opening(line,door,level))]
                 for line,group in zip(lines,doors)]
-    if not any(candidates):
+    if not partial and not any(candidates):
         return datum
     nearby=[]
     for obj in scene.objects:
@@ -248,20 +265,23 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
         if not cases:
             accepted.append([])
             continue
-        protected=_safe_jamb_span(line,nearby)
+        protected=_safe_jamb_span(line,nearby,partial=partial)
         good=[]
         clear=_unambiguous(cases)
         if warnings is not None and len(clear)!=len(cases):
             warnings.append(f'{line.wall.name}: overlapping door cuts could not extend the floor.')
         for obj,item in clear:
             lo,hi,*_=item
+            if partial and (hi<=EPS or lo>=line.x(line.b)-EPS):
+                # A shared long wall may own doors in an adjacent region.
+                continue
             if lo<=protected[0]+EPS or hi>=protected[1]-EPS:
                 if warnings is not None:
                     warnings.append(f'{obj.name}: opening touches a wall corner; threshold not built.')
                 continue
             good.append((obj,item))
         accepted.append(good)
-    if not any(accepted):
+    if not partial and not any(accepted):
         return datum
     joins=[_physical_joint(p,c) for p,c in zip(lines[-1:]+lines[:-1],lines)]
     result=[]

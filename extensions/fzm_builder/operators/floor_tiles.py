@@ -4,7 +4,7 @@ from dataclasses import asdict
 import bpy
 
 from .tile_shader import (
-    FLOOR_PATTERNS, TileSpec, base_material, dispose_if_unused, tile_material, validate,
+    FLOOR_PATTERNS, MOSAIC_SIZE, SHAPES, TileSpec, base_material, dispose_if_unused, reset_mosaic_size, tile_material, validate,
 )
 
 LAYOUT = "FZM_FLOOR_TILE_LAYOUT"
@@ -16,7 +16,7 @@ def get_spec(floor):
         return None
     return TileSpec(pattern=saved['pattern'], width=saved['width'], height=saved['height'],
         grout=saved['grout'], angle=saved['angle'], offset_u=saved['offset_u'],
-        offset_v=saved['offset_v'], color=tuple(saved['color']))
+        offset_v=saved['offset_v'], color=tuple(saved['color']), shape=saved.get('shape', 'RECTANGLE'))
 
 
 def floor_surface_indices(obj):
@@ -92,6 +92,8 @@ class FZM_OT_floor_tile_layout(bpy.types.Operator):
     bl_options = {'UNDO'}
 
     pattern: bpy.props.EnumProperty(name='Layout', items=FLOOR_PATTERNS, default='STACK')
+    tile_shape: bpy.props.EnumProperty(name='Tile Shape', items=SHAPES, default='RECTANGLE', update=reset_mosaic_size)
+    mosaic_size: bpy.props.FloatProperty(name='Mosaic Piece Size', unit='LENGTH', min=.01, max=10., default=.0508)
     tile_width: bpy.props.FloatProperty(name='Tile Width', unit='LENGTH', min=.01, max=10., default=.6096)
     tile_height: bpy.props.FloatProperty(name='Tile Length', unit='LENGTH', min=.01, max=10., default=.3048)
     grout: bpy.props.FloatProperty(name='Grout Width', unit='LENGTH', min=0., max=.10, default=.003)
@@ -108,7 +110,11 @@ class FZM_OT_floor_tile_layout(bpy.types.Operator):
 
     def invoke(self, context, event):
         spec = get_spec(context.active_object) or TileSpec()
-        self.pattern, self.tile_width, self.tile_height = spec.pattern, spec.width, spec.height
+        self.pattern, self.tile_shape = spec.pattern, spec.shape
+        if spec.shape == 'RECTANGLE':
+            self.tile_width, self.tile_height = spec.width, spec.height
+        else:
+            self.mosaic_size = spec.width
         self.grout, self.angle = spec.grout, spec.angle
         self.offset_u, self.offset_v, self.grout_color = spec.offset_u, spec.offset_v, spec.color
         return context.window_manager.invoke_props_dialog(self, width=400)
@@ -117,15 +123,23 @@ class FZM_OT_floor_tile_layout(bpy.types.Operator):
         layout = self.layout
         layout.prop(self, 'pattern')
         if self.pattern != 'NONE':
-            for name in ('tile_width', 'tile_height', 'grout', 'angle', 'offset_u', 'offset_v', 'grout_color'):
+            layout.prop(self, 'tile_shape')
+            if self.tile_shape == 'RECTANGLE':
+                layout.prop(self, 'tile_width')
+                layout.prop(self, 'tile_height')
+            else:
+                layout.prop(self, 'mosaic_size')
+            for name in ('grout', 'angle', 'offset_u', 'offset_v', 'grout_color'):
                 layout.prop(self, name)
             layout.label(text='This changes joints, not the selected Floor Finish.')
             layout.label(text='View in Material Preview or Rendered mode.')
 
     def execute(self, context):
+        size = self.mosaic_size if self.properties.is_property_set('mosaic_size') else MOSAIC_SIZE.get(self.tile_shape, .0508)
+        dimensions = (self.tile_width, self.tile_height) if self.tile_shape == 'RECTANGLE' else (size, size)
         spec = None if self.pattern == 'NONE' else TileSpec(
-            self.pattern, self.tile_width, self.tile_height, self.grout, self.angle,
-            self.offset_u, self.offset_v, tuple(self.grout_color))
+            self.pattern, *dimensions, self.grout, self.angle,
+            self.offset_u, self.offset_v, tuple(self.grout_color), self.tile_shape)
         try:
             apply_layout(context.active_object, spec)
         except (ValueError, RuntimeError) as err:
