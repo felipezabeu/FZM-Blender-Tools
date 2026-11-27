@@ -12,7 +12,7 @@ from mathutils import Vector
 from mathutils.geometry import intersect_line_line_2d
 
 from .. import hb_assets, hb_types, hb_utils, paint_palettes
-from . import baseboard_perimeter, door_units, room_paint, shower_trim, trim_profiles, wall_baseboard
+from . import baseboard_perimeter, door_units, room_paint, shower_trim, trim_profiles, wall_baseboard, trim_paint
 
 
 CASING = 'FZM_DOOR_CASING'
@@ -126,6 +126,17 @@ class FZM_OT_wall_paint(bpy.types.Operator):
         ('ROOM', 'Selected Room Floor', 'Paint only the physical wall faces and portions facing one selected floor'),
         ('RESET_ROOM', 'Reset Room Paint', 'Remove only the room paint associated with one selected floor'),
     ])
+    target: bpy.props.EnumProperty(items=[
+        ('WALLS', 'Walls', 'Paint walls'),
+        ('DOORS', 'Doors', 'Paint door leaves without changing glass, hardware, or casing'),
+        ('BASEBOARDS', 'Baseboards', 'Paint generated baseboards'),
+    ], options={'HIDDEN', 'SKIP_SAVE'})
+    trim_scope: bpy.props.EnumProperty(name='Apply To', items=[
+        ('SELECTION', 'Selection', 'Selected doors or baseboards; select a floor or wall for its attached baseboards'),
+        ('ALL', 'All in Scene', 'Paint all eligible objects of this type in the current scene'),
+    ])
+    trim_white: bpy.props.BoolProperty(name='Use Default White', default=False)
+
     input_mode: bpy.props.EnumProperty(name='Input', items=[
         ('HEX', 'HEX', 'Six-digit sRGB color'),
         ('RGB', 'RGB', 'sRGB color picker'),
@@ -150,12 +161,21 @@ class FZM_OT_wall_paint(bpy.types.Operator):
         if (not self.properties.is_property_set('scope') and active and active.get('IS_FLOOR_BP')):
             self.scope = 'ROOM'
         self.catalog = wall_paint_catalog()
-        return context.window_manager.invoke_props_dialog(self)
+        title = {'WALLS': 'Wall Paint', 'DOORS': 'Door Paint', 'BASEBOARDS': 'Baseboard Paint'}[self.target]
+        return context.window_manager.invoke_props_dialog(self, title=title)
 
     def check(self, context):
-        return self.input_mode == 'PALETTE'
+        return self.target != 'WALLS' or self.input_mode == 'PALETTE'
 
     def draw(self, context):
+        if self.target != 'WALLS':
+            self.layout.prop(self, 'trim_scope')
+            self.layout.label(text=('Select a door or one of its parts.' if self.target == 'DOORS'
+                                    else 'Select baseboards, their floor, or their wall.'))
+            self.layout.prop(self, 'trim_white')
+            if not self.trim_white:
+                self.draw_color()
+            return
         self.layout.prop(self, 'scope')
         if self.scope in {'ROOM', 'RESET_ROOM'}:
             self.layout.label(text='Select one floor. Only its room-facing wall spans are affected.')
@@ -164,6 +184,9 @@ class FZM_OT_wall_paint(bpy.types.Operator):
         if self.scope in {'RESET', 'RESET_ROOM'}:
             return
 
+        self.draw_color()
+
+    def draw_color(self):
         self.layout.prop(self, 'input_mode', expand=True)
         if self.input_mode != 'PALETTE':
             self.layout.prop(self, 'hex_color' if self.input_mode == 'HEX' else 'rgb_color')
@@ -195,7 +218,62 @@ class FZM_OT_wall_paint(bpy.types.Operator):
             raise ValueError(message)
         return swatch
 
+    def make_material(self):
+        swatch = None
+        if self.input_mode == 'PALETTE':
+            swatch = self.find_swatch(wall_paint_catalog())
+            color = swatch.rgb
+        else:
+            color = parse_hex(self.hex_color) if self.input_mode == 'HEX' else self.rgb_color
+        return paint_material(color, swatch)
+
+    def execute_trim(self, context):
+        from . import hinged_doors, native_doors
+
+        sources = context.scene.objects if self.trim_scope == 'ALL' else context.selected_objects
+        if self.target == 'DOORS':
+            doors = {door for obj in sources if (door := door_units.cage_for(obj))
+                     and trim_paint.editable(door)}
+            targets = [(door, part) for door in doors if (part := (
+                native_doors.visual_for(door) or hinged_doors.visual_for(door)))
+                and trim_paint.can_paint(part)]
+        else:
+            props = (BASEBOARD, WALL_BASEBOARD)
+            objects = set(sources)
+            if self.trim_scope == 'SELECTION':
+                objects.update(child for obj in sources for child in obj.children)
+            targets = [(obj, None) for obj in objects if obj.type == 'MESH'
+                       and trim_paint.editable(obj) and any(obj.get(key) for key in props)]
+        if not targets:
+            self.report({'WARNING'}, 'No paintable objects in the chosen selection or scope.')
+            return {'CANCELLED'}
+        try:
+            material = (None if self.target == 'DOORS' else white_baseboard()) if self.trim_white else self.make_material()
+        except ValueError as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        for obj, part in targets:
+            if part is not None:
+                if material is None:
+                    if trim_paint.KEY in obj:
+                        del obj[trim_paint.KEY]
+                else:
+                    obj[trim_paint.KEY] = material
+                trim_paint.sync(part)
+            else:
+                if not obj.material_slots:
+                    if obj.data.users > 1:
+                        obj.data = obj.data.copy()
+                    obj.data.materials.append(material)
+                for slot in obj.material_slots:
+                    slot.link = 'OBJECT'
+                    slot.material = material
+        self.report({'INFO'}, f'Painted {len(targets)} {self.target.lower()}')
+        return {'FINISHED'}
+
     def execute(self, context):
+        if self.target != 'WALLS':
+            return self.execute_trim(context)
         room_scope = self.scope in {'ROOM', 'RESET_ROOM'}
         if room_scope:
             floors = [obj for obj in context.selected_objects
@@ -229,16 +307,10 @@ class FZM_OT_wall_paint(bpy.types.Operator):
             material = context.scene.home_builder.wall_material
         else:
             try:
-                swatch = None
-                if self.input_mode == 'PALETTE':
-                    swatch = self.find_swatch(wall_paint_catalog())
-                    color = swatch.rgb
-                else:
-                    color = parse_hex(self.hex_color) if self.input_mode == 'HEX' else self.rgb_color
+                material = self.make_material()
             except ValueError as error:
                 self.report({'ERROR'}, str(error))
                 return {'CANCELLED'}
-            material = paint_material(color, swatch)
 
         if room_scope:
             try:
@@ -755,6 +827,28 @@ def _save_wall_refs(trim, walls):
     trim['walls'] = {str(i): wall for i, wall in enumerate(sorted(walls, key=lambda wall: wall.name))}
 
 
+def white_baseboard():
+    name = 'FZM Baseboard | White'
+    mat = next((m for m in bpy.data.materials if m.get('fzm_baseboard_white')), None)
+    if mat is None:
+        mat = paint_material((1, 1, 1))
+        mat.name = name
+        mat['fzm_baseboard_white'] = True
+    return mat
+
+
+def finish_baseboard_mesh(trim, mesh, material):
+    # A repeated Add Baseboards must preserve paint when no new material is chosen.
+    if trim and not material and trim.material_slots:
+        _replace_baseboard_preserving_materials(trim, mesh)
+    else:
+        mesh.materials.append(material or white_baseboard())
+        if trim:
+            _replace_baseboard_mesh(trim, mesh)
+            slot = trim.material_slots[0]
+            slot.link = 'DATA'
+
+
 def _replace_baseboard_mesh(trim, mesh):
     old_mesh = trim.data
     trim.data = mesh
@@ -993,12 +1087,9 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
         for wall, (vertices, faces) in planned:
             previous = wall_trim_children(wall)
             mesh = create_mesh('Wall Baseboards', vertices, faces)
-            if material:
-                mesh.materials.append(material)
-            if previous:
-                trim = previous.pop(0)
-                _replace_baseboard_mesh(trim, mesh)
-            else:
+            trim = previous.pop(0) if previous else None
+            finish_baseboard_mesh(trim, mesh, material)
+            if not trim:
                 trim = bpy.data.objects.new('Wall Baseboards', mesh)
                 context.collection.objects.link(trim)
                 trim.parent = wall
@@ -1042,12 +1133,9 @@ class FZM_OT_room_baseboards(bpy.types.Operator):
                 return {'CANCELLED'}
             mesh = create_mesh('Room Baseboards', vertices, faces)
             material = bpy.data.materials.get(self.material)
-            if material:
-                mesh.materials.append(material)
             trim = previous.pop(0) if previous else None
-            if trim:
-                _replace_baseboard_mesh(trim, mesh)
-            else:
+            finish_baseboard_mesh(trim, mesh, material)
+            if not trim:
                 trim = bpy.data.objects.new('Room Baseboards', mesh)
                 context.collection.objects.link(trim)
                 trim.parent = floor

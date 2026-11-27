@@ -353,7 +353,7 @@ class HOME_BUILDER_PT_room_layout_walls(bpy.types.Panel):
         row.prop(hb_scene, 'wall_material', text="Wall Material")
         row.operator('home_builder_walls.apply_wall_material', text="", icon='FILE_REFRESH', emboss=False)
         row = layout.row(align=True)
-        row.operator('fzm_builder.wall_paint', icon='MATERIAL')
+        row.operator('fzm_builder.wall_paint', icon='MATERIAL').target = 'WALLS'
         row.operator('fzm_builder.import_paint_palette', text='', icon='FILE_FOLDER')
         layout.operator('fzm_builder.room_baseboards', icon='MOD_SOLIDIFY')
 
@@ -385,6 +385,7 @@ class HOME_BUILDER_PT_room_layout_doors_windows(bpy.types.Panel):
         if bpy.ops.fzm_builder.edit_door.poll():
             row.operator('fzm_builder.edit_door', icon='PREFERENCES')
         row.operator('fzm_builder.door_casing', icon='MOD_SOLIDIFY')
+        layout.operator('fzm_builder.wall_paint', text='Door Paint', icon='MATERIAL').target = 'DOORS'
         row = layout.row(align=True)
         row.scale_y = 1.2
         row.operator('home_builder_doors_windows.place_window', text="3D Window", icon='MESH_PLANE').add_frame = True
@@ -437,9 +438,12 @@ class HOME_BUILDER_PT_room_layout_floor(bpy.types.Panel):
         layout.operator("fzm_builder.update_floor_outline", icon="FILE_REFRESH")
         layout.operator("fzm_builder.floor_divider")
         layout.operator("fzm_builder.room_baseboards", icon="MOD_SOLIDIFY")
+        layout.operator("fzm_builder.wall_paint", text="Baseboard Paint", icon="MATERIAL").target = "BASEBOARDS"
         layout.operator("fzm_builder.floor_finish", icon="MATERIAL")
         layout.operator("fzm_builder.floor_tile_layout", icon="TEXTURE")
-        layout.operator("fzm_builder.wall_paint", text="Paint Room Walls", icon="MATERIAL").scope = 'ROOM'
+        paint = layout.operator("fzm_builder.wall_paint", text="Paint Room Walls", icon="MATERIAL")
+        paint.target = "WALLS"
+        paint.scope = "ROOM"
         layout.operator("home_builder_walls.add_ceiling")
 
 

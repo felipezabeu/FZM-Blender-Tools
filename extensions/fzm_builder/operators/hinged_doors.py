@@ -6,6 +6,7 @@ import bpy
 from .. import hb_types
 from . import berkway_doors, door_panel_fill, native_doors as nd
 from . import hinged_kinematics as kin
+from . import trim_paint
 from .hinged_kinematics import LEAF_THICKNESS, select_scalar as _scalar_select
 
 ENABLED = 'FZM_HINGED_3D_ENABLED'
@@ -331,6 +332,7 @@ def set_visual(door, enabled, style, pose, hardware=None, finish=None, fill=None
             visual.set_input(door_panel_fill.INPUT,float(style==nd.STYLE_SHAKER_5 and fill=='FROSTED'))
         visual.set_input(nd.STYLE,float(STYLE_VALUES[style]))
         visual.set_input(nd.OPEN,pose)
+        trim_paint.sync(obj)
         obj.update_tag()
         door[ENABLED]=True
         # Keep the cutter usable for the wall but prevent a solid cage covering
