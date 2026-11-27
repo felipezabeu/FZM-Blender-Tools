@@ -14,7 +14,8 @@ from ..operators.wall_edit import SceneGraph, EPS, START, END
 from ..operators.wall_baseboard import footprint as wall_footprint
 from ..operators.wall_move_input import MAX_INPUT, distance_to_world, offset_for_distance, unit_label
 from ..operators.wall_edit_snap import (
-    Guide, SquareGuide, SquareHit, PIXELS, candidates, square_candidates, square_markers,
+    Guide, SquareGuide, SquareHit, EdgeSquareHit, PIXELS, END_BIAS,
+    candidates, edge_square_candidates, square_candidates, square_markers,
 )
 
 EDIT = 'fzm_builder.edit_wall'
@@ -68,7 +69,7 @@ def _guides(model, active, mode, view_layer):
     affected={wall for side in sides for wall,_ in model.graph.members[active,side]}
     level=model.levels[active]
     result=[]
-    for wall,segment in model.graph.geometry.items():
+    for wall in model.graph.geometry:
         if (wall in affected or abs(model.levels[wall]-level)>.002
                 or not wall.visible_get(view_layer=view_layer)
                 or wall.get('IS_FAKE_WALL') or wall.get('WALL_TYPE')=='Fake'):
@@ -76,10 +77,9 @@ def _guides(model, active, mode, view_layer):
         try:
             corners, _ = wall_footprint(wall)
         except ValueError:
-            result.append(Guide(wall.name,segment.start,segment.end))
-            continue
-        for a,b in zip(corners,corners[1:]+corners[:1]):
-            result.append(Guide(wall.name,tuple(a),tuple(b)))
+            continue  # Never snap to an unverified datum, trim or other mesh.
+        for i, (a, b) in enumerate(zip(corners, corners[1:] + corners[:1])):
+            result.append(Guide(wall.name, tuple(a), tuple(b), long_side=i in (0, 2)))
     return tuple(result)
 
 
@@ -156,6 +156,8 @@ def _preview(operator):
 
     if operator.plan:
         marks=square_markers(operator.right_angles,operator.offset.xy)
+        if operator.edge_square_marker:
+            marks.append(operator.edge_square_marker)
         if marks:
             z=operator.level+.053
             verts=[]
@@ -235,10 +237,12 @@ class FZM_OT_edit_wall(bpy.types.Operator):
         self.snap_enabled=context.scene.home_builder.visual_wall_snap
         self.square_enabled=context.scene.home_builder.visual_wall_square
         self.snap_hit=None
+        self.edge_square_marker = None
         self.right_angles=_square_guides(self.model,self.wall,self.edit_mode)
         self.guides=_guides(self.model,self.wall,self.edit_mode,context.view_layer)
         segment=self.model.graph.geometry[self.wall]
         middle=tuple((a+b)*.5 for a,b in zip(segment.start,segment.end))
+        self.fixed_end = {'START': segment.end, 'END': segment.start, 'MOVE': None}[self.edit_mode]
         self.anchors={'START':(('start',segment.start),), 'END':(('end',segment.end),),
                       'MOVE':(('center',middle),('start',segment.start),('end',segment.end))}[self.edit_mode]
         self.first = _pixels(event, self.region)
@@ -285,6 +289,7 @@ class FZM_OT_edit_wall(bpy.types.Operator):
 
     def _update_numeric(self, context, event):
         self.snap_hit=None
+        self.edge_square_marker = None
         self.plan, self.error = {}, None
         self.offset = Vector((0.,0.,0.))
         settings = context.scene.unit_settings
@@ -339,6 +344,7 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             self._update_numeric(context,event)
             return
         self.snap_hit=None
+        self.edge_square_marker = None
         point = _on_ground(self.region, self.rv3d, _pixels(event, self.region), self.level)
         if point is None:
             self.plan, self.error = {}, 'Use a top or angled view to move in the floor plane.'
@@ -361,7 +367,18 @@ class FZM_OT_edit_wall(bpy.types.Operator):
             if self.square_enabled and self.right_angles:
                 found.extend(square_candidates(self.right_angles,self.anchors[0][1],
                                                self.offset.xy,self.axis,project,pixels))
-            found.sort(key=lambda hit:hit.pixels-(5. if isinstance(hit,SquareHit) else 4. if hit.kind=='CORNER' else 0.))
+            if self.square_enabled and self.guides and self.fixed_end is not None:
+                found.extend(edge_square_candidates(self.guides, self.anchors[0][1], self.fixed_end,
+                                                     self.offset.xy, self.axis, project, pixels))
+            def rank(hit):
+                if isinstance(hit, EdgeSquareHit):
+                    bias = 10.  # Favor the complete edge + angle snap near the expected T.
+                elif isinstance(hit, SquareHit):
+                    bias = 5.
+                else:
+                    bias = END_BIAS if hit.kind == 'CORNER' else 0.
+                return hit.pixels - bias, hit.pixels, hit.guide.name, hit.offset
+            found.sort(key=rank)
             for hit in found:
                 try:
                     self.plan=self.model.checked_plan(self.wall,self.edit_mode,*hit.offset)
@@ -369,7 +386,10 @@ class FZM_OT_edit_wall(bpy.types.Operator):
                     continue
                 self.offset=Vector((*hit.offset,0.))
                 self.error=None
-                if isinstance(hit,SquareHit):
+                if isinstance(hit, EdgeSquareHit):
+                    self.edge_square_marker = hit.marker
+                    self._hint(f'90° to {hit.guide.name} edge')
+                elif isinstance(hit, SquareHit):
                     self._hint(f'90° to {hit.guide.name}')
                 else:
                     self.snap_hit=hit

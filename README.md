@@ -6,8 +6,12 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 
 | Extensão | Versão | Função |
 |---|---:|---|
-| FZM Builder | 5.1.28 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.29 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.29
+
+- Ao arrastar a ponta de uma parede, **S** encaixa só nas arestas e cantos das paredes visíveis do mesmo nível, sem usar rodapés ou outros objetos. Com **Q** ligado, a ponta também encontra o ponto exato de 90° na face de uma parede ainda não conectada. O encaixe continua sem criar conexão automaticamente.
 
 ### FZM Builder 5.1.28
 
