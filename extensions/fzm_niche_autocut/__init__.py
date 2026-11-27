@@ -7,7 +7,9 @@ import uuid
 import bpy
 import numpy as np
 from bpy.app.handlers import persistent
-from mathutils import Vector
+from bpy.types import Operator
+from bpy_extras.io_utils import ImportHelper
+from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
 ROOT = "fzm_shower_niche_root"
@@ -393,6 +395,192 @@ def on_load(_):
     if bpy.context.scene and bpy.context.scene.name in TRACKING:
         request()
 
+def matching_instance(o):
+    if o is None or o.type != 'EMPTY' or o.instance_type != 'COLLECTION' or not o.instance_collection:
+        return None
+    objects=tuple(o.instance_collection.all_objects)
+    roots=[x for x in objects if x.type=='MESH' and x.get(ROOT)]
+    cutters=[x for x in objects if x.type=='MESH' and x.get(CUTTER)]
+    if len(objects)==2 and len(roots)==len(cutters)==1:
+        root,cut=roots[0],cutters[0]
+        if root!=cut and root.parent is None and cut.parent==root:
+            return root,cut
+    return None
+
+def local_container(context, o):
+    if not editable(o) or len(o.users_scene)!=1 or context.scene.objects.get(o.name)!=o:
+        raise ValueError('O nicho precisa ser uma cópia local, em uma única cena.')
+    containers=set(o.users_collection)
+    layers=[context.view_layer.layer_collection]
+    while layers:
+        layer=layers.pop(0)
+        if layer.exclude or not layer.is_visible:
+            continue
+        collection=layer.collection
+        if collection in containers and editable(collection):
+            return collection
+        layers.extend(layer.children)
+    raise ValueError('Mova o nicho para uma coleção local e visível na cena.')
+
+def clear_status(o):
+    for k in (ACTIVE,KEY,BOUNDS,IGNORE):
+        if k in o:
+            del o[k]
+
+def clone_cutter(source, old_root, new_root, collection):
+    # Copy the native driver data, remap only its authored targets. These are
+    # simple single-property AVERAGE drivers: no script execution is needed.
+    child=source.copy()
+    try:
+        child.parent=new_root
+        child.matrix_parent_inverse=source.matrix_parent_inverse.copy()
+        child.matrix_basis=source.matrix_basis.copy()
+        nrebound=0
+        for fcurve in child.animation_data.drivers if child.animation_data else ():
+            driver=fcurve.driver
+            if driver.type!='AVERAGE' or len(driver.variables)!=1 or driver.variables[0].type!='SINGLE_PROP':
+                raise ValueError('O cortador não usa os controles nativos esperados para o nicho.')
+            target=driver.variables[0].targets[0]
+            if target.id!=old_root:
+                raise ValueError('O cortador selecionado não pertence a esse modelo de nicho.')
+            try:
+                new_root.path_resolve(target.data_path)
+            except ValueError as exc:
+                raise ValueError('Os controles não correspondem. Use o arquivo original da mesma versão.') from exc
+            target.id=new_root
+            nrebound+=1
+        if not nrebound:
+            raise ValueError('O cortador não inclui os controles de dimensão do nicho.')
+        clear_status(child)
+        child.hide_render=True
+        child.display_type='WIRE'
+        collection.objects.link(child)
+        return child
+    except Exception:
+        bpy.data.objects.remove(child,do_unlink=True)
+        raise
+
+def activate_obj(context,o):
+    for selected in context.selected_objects:
+        selected.select_set(False,view_layer=context.view_layer)
+    o.hide_set(False,view_layer=context.view_layer)
+    o.select_set(True,view_layer=context.view_layer)
+    context.view_layer.objects.active=o
+
+class FZMNC_OT_realize(bpy.types.Operator):
+    bl_idname='fzm_niche_cut.realize'
+    bl_label='Tornar nicho editável'
+    bl_description='Converte esta instância do Shower Niche em um nicho com modificadores e cortador próprios'
+    bl_options={'REGISTER','UNDO'}
+    start_cut: bpy.props.BoolProperty(name='Ligar recorte automático',default=False)
+
+    @classmethod
+    def poll(cls,c):
+        return c.mode=='OBJECT' and matching_instance(c.active_object) is not None
+
+    def execute(self,c):
+        pivot=c.active_object
+        source=pivot.instance_collection
+        ref,ref_cut=matching_instance(pivot)
+        try:
+            coll=local_container(c,pivot)
+        except ValueError as exc:
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        root=ref.copy()
+        try:
+            # Keep the original empty as an inert placement anchor. This
+            # retains the complete instance matrix, even composed shear from
+            # a rotated child under a non-uniformly scaled parent. Only this
+            # one instance is affected, not the template or its siblings.
+            root.parent=pivot
+            root.matrix_parent_inverse=Matrix.Translation(-Vector(source.instance_offset))
+            root.matrix_basis=ref.matrix_basis.copy()
+            clear_status(root)
+            coll.objects.link(root)
+            child=clone_cutter(ref_cut,ref,root,coll)
+        except (ValueError,RuntimeError,TypeError) as exc:
+            bpy.data.objects.remove(root,do_unlink=True)
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        pivot.instance_type='NONE'
+        pivot.instance_collection=None
+        pivot.hide_set(True,view_layer=c.view_layer)
+        c.view_layer.update()
+        activate_obj(c,root)
+        if self.start_cut:
+            root[ACTIVE]=True
+            result=reconcile(c.scene,c.view_layer)
+            self.report({'INFO'},f'Nicho editável: {result[2]} corte(s) automáticos nesta cena.')
+        else:
+            self.report({'INFO'},'Nicho editável. Abra Modifiers ou ligue o recorte automático.')
+        return {'FINISHED'}
+
+class FZMNC_OT_recover(Operator, ImportHelper):
+    bl_idname='fzm_niche_cut.recover'
+    bl_label='Buscar o cortador no arquivo do nicho'
+    bl_description='Recupera o cortador que falta sem mover ou substituir o nicho visível'
+    bl_options={'REGISTER','UNDO'}
+
+    filename_ext='.blend'
+    filter_glob: bpy.props.StringProperty(default='*.blend',options={'HIDDEN'})
+    root_name: bpy.props.StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls,c):
+        o=root_for(c.active_object)
+        return c.mode=='OBJECT' and o is not None and editable(o) and cutter_for(o) is None
+
+    def invoke(self,c,event):
+        self.root_name=root_for(c.active_object).name
+        return ImportHelper.invoke(self,c,event)
+
+    def execute(self,c):
+        root=c.scene.objects.get(self.root_name) if self.root_name else root_for(c.active_object)
+        if root is None or not root.get(ROOT) or cutter_for(root) is not None:
+            self.report({'WARNING'},'Selecione o Shower Niche que está sem cortador.')
+            return {'CANCELLED'}
+        try:
+            coll=local_container(c,root)
+        except ValueError as exc:
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        before_objects={o.as_pointer() for o in bpy.data.objects}
+        before_cols={o.as_pointer() for o in bpy.data.collections}
+        tmp=None
+        imported=()
+        try:
+            with bpy.data.libraries.load(self.filepath,link=False) as (src,dst):
+                if 'Shower Niche' not in src.collections:
+                    raise ValueError('Escolha o arquivo 29_Shower_Niche_Parametrico.blend.')
+                dst.collections=['Shower Niche']
+            tmp=dst.collections[0]
+            if tmp is None:
+                raise ValueError('Não foi possível ler a coleção Shower Niche.')
+            imported=tuple(tmp.all_objects)
+            roots=[o for o in imported if o.get(ROOT)]
+            cutters=[o for o in imported if o.get(CUTTER)]
+            if len(imported)!=2 or len(roots)!=1 or len(cutters)!=1 or cutters[0].parent!=roots[0]:
+                raise ValueError('Use uma cópia original da biblioteca, com o nicho e seu cortador.')
+            clone_cutter(cutters[0],roots[0],root,coll)
+        except (OSError,ValueError,RuntimeError,TypeError) as exc:
+            self.report({'WARNING'},str(exc))
+            return {'CANCELLED'}
+        finally:
+            # Discard only temporary IDs freshly loaded by this operator,
+            # never pre-existing project instances or any other scene objects.
+            if tmp is not None and tmp.as_pointer() not in before_cols:
+                bpy.data.collections.remove(tmp,do_unlink=True)
+                for obj in imported:
+                    if obj.as_pointer() not in before_objects and not obj.users_collection:
+                        bpy.data.objects.remove(obj,do_unlink=True)
+        c.view_layer.update()
+        activate_obj(c,root)
+        if root.get(ACTIVE):
+            reconcile(c.scene,c.view_layer)
+        self.report({'INFO'},'Cortador recuperado. A posição do nicho foi mantida.')
+        return {'FINISHED'}
+
 class FZMNC_OT_toggle(bpy.types.Operator):
     bl_idname='fzm_niche_cut.toggle'
     bl_label='Alternar recorte automático'
@@ -407,7 +595,7 @@ class FZMNC_OT_toggle(bpy.types.Operator):
     def execute(self,c):
         o=root_for(c.active_object)
         if not o.get(ACTIVE) and cutter_for(o) is None:
-            self.report({'WARNING'},'Não encontrei o cortador. Use File → Append → Collection → Shower Niche.')
+            self.report({'WARNING'},'Falta o cortador: use Buscar o cortador no arquivo do nicho, ou Append → Collection → Shower Niche.')
             return {'CANCELLED'}
         o[ACTIVE]=not bool(o.get(ACTIVE))
         result=reconcile(c.scene,c.view_layer)
@@ -456,10 +644,18 @@ class FZMNC_PT_panel(bpy.types.Panel):
     def draw(self,c):
         ui=self.layout
         o=root_for(c.active_object)
-        if o is not None:
+        if matching_instance(c.active_object):
+            ui.label(text='Este nicho é uma instância.',icon='INFO')
+            ui.operator('fzm_niche_cut.realize',text='Tornar editável e ligar recorte',icon='MOD_BOOLEAN').start_cut=True
+            ui.operator('fzm_niche_cut.realize',text='Só tornar nicho editável').start_cut=False
+        elif o is not None:
             active=bool(o.get(ACTIVE))
-            ui.operator('fzm_niche_cut.toggle',text='Desligar recorte automático' if active else 'Ligar recorte automático',
-                        icon='CHECKBOX_HLT' if active else 'CHECKBOX_DEHLT')
+            if cutter_for(o) is None:
+                ui.label(text='Falta o cortador neste nicho.',icon='ERROR')
+                ui.operator('fzm_niche_cut.recover',icon='FILE_BLEND')
+            if active or cutter_for(o) is not None:
+                ui.operator('fzm_niche_cut.toggle',text='Desligar recorte automático' if active else 'Ligar recorte automático',
+                            icon='CHECKBOX_HLT' if active else 'CHECKBOX_DEHLT')
         else:
             ui.label(text='Selecione o objeto Shower Niche.')
             if FZMNC_OT_ignore.poll(c):
@@ -469,7 +665,7 @@ class FZMNC_PT_panel(bpy.types.Panel):
         ui.label(text=f'{count} corte(s) na cena.')
         if skipped:ui.label(text='Há candidatos sem malha sólida.',icon='INFO')
 
-CLASSES=(FZMNC_OT_toggle,FZMNC_OT_refresh,FZMNC_OT_ignore,FZMNC_PT_panel)
+CLASSES=(FZMNC_OT_realize,FZMNC_OT_recover,FZMNC_OT_toggle,FZMNC_OT_refresh,FZMNC_OT_ignore,FZMNC_PT_panel)
 HOOKS=((bpy.app.handlers.depsgraph_update_post,changed),(bpy.app.handlers.load_post,on_load),
        (bpy.app.handlers.undo_post,on_load),(bpy.app.handlers.redo_post,on_load))
 

@@ -1,10 +1,17 @@
-FZM Niche AutoCut 1.0 | recorte contínuo, não destrutivo
+FZM Niche AutoCut 1.0.1 | recorte contínuo, não destrutivo
 Blender 4.3–5.1. ZIP único, sem dependências externas.
 
-1. Blender: Edit → Preferences → Get Extensions → menu ▼ → Install from Disk.
-   Escolha FZM-Niche-AutoCut-1.0.0.zip sem extrair; deixe a extensão ligada.
-2. No seu projeto: File → Append → 29_Shower_Niche_Parametrico.blend → Collection → Shower Niche.
-   Não use Link. Para mover o conjunto, selecione o objeto Shower Niche, não o cortador.
+1. Blender: Edit → Preferences → Get Extensions → Refresh Remote e atualize
+   FZM Niche AutoCut. Se preferir ZIP: menu ▼ → Install from Disk.
+2. Para uma nova inserção: File → Append → 29_Shower_Niche_Parametrico.blend →
+   Collection → Shower Niche, com Instance Collections desligado.
+   Se já arrastou o nicho e ficou só com uma instância (Empty), selecione-a e
+   use N → FZM Niche → Tornar editável e ligar recorte. A opção Só tornar
+   nicho editável prepara a peça sem iniciar cortes. A posição e o tamanho
+   aparentes são mantidos; o objeto com os modificadores fica selecionado.
+   Se o objeto editável estiver sem cortador, use Buscar o cortador no arquivo
+   do nicho e selecione o 29_Shower_Niche_Parametrico.blend da mesma versão.
+   Para mover o conjunto, selecione o objeto Shower Niche, não o cortador.
 3. Em Object Mode, selecione Shower Niche. Na viewport: N → FZM Niche →
    Ligar recorte automático. Ele fica desligado por padrão em cada nicho novo.
 4. Posicione o nicho e ajuste as dimensões nos Modifiers. Para funcionar, o volume
