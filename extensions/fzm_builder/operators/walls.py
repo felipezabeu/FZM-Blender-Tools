@@ -14,6 +14,7 @@ from .divide_wall import FZM_OT_divide_wall
 from .floor_outline import FZM_OT_update_floor_outline, remember_created_floor
 from .floor_finish import FZM_OT_floor_finish
 from .floor_tiles import FZM_OT_floor_tile_layout
+from . import room_lights
 from .shower_area import FZM_OT_shower_area
 from .wall_divider import FZM_OT_wall_divider, FZM_OT_pick_wall_divider
 from .shower_fixtures import FZM_OT_shower_fixture
@@ -126,14 +127,15 @@ def get_wall_endpoints(wall_obj):
     
     return start.to_2d(), end.to_2d()
 
-def find_wall_chains():
+def find_wall_chains(walls=None):
     """Find connected chains of walls in the current scene, returning list of ordered wall objects.
     
     Handles both open chains (interior walls) and closed loops (room perimeters).
     Supports junction points where multiple walls share the same start/end location.
     Closed loops are detected first so interior branches don't steal perimeter walls.
     """
-    walls = [obj for obj in bpy.context.scene.objects if obj.get('IS_WALL_BP')]
+    if walls is None:
+        walls = [obj for obj in bpy.context.scene.objects if obj.get('IS_WALL_BP')]
     
     if not walls:
         return []
@@ -2208,455 +2210,239 @@ class home_builder_walls_OT_add_floor(bpy.types.Operator):
 class home_builder_walls_OT_add_ceiling(bpy.types.Operator):
     bl_idname = "home_builder_walls.add_ceiling"
     bl_label = "Add Ceiling"
-    bl_description = "This will add a ceiling to the room based on the wall layout"
+    bl_description = "Create separate ceilings for rooms enclosed by physical walls"
     bl_options = {'UNDO'}
 
-    def create_ceiling_mesh(self, name, points, height):
-        """Create a ceiling mesh from boundary points at the given height."""
-        mesh = bpy.data.meshes.new(name)
-        obj = bpy.data.objects.new(name, mesh)
+    def execute(self, context):
+        from .ceiling_rooms import execute_ceilings
+        return execute_ceilings(self, context)
 
-        bpy.context.collection.objects.link(obj)
 
-        bm = bmesh.new()
+class FZM_OT_update_ceiling_outline(bpy.types.Operator):
+    bl_idname = "fzm_builder.update_ceiling_outline"
+    bl_label = "Update Ceiling Outline"
+    bl_description = "Update the selected ceiling to follow closed walls, preserving its height and finish"
+    bl_options = {'UNDO'}
 
-        # If closed loop, remove duplicate closing point
-        closed = is_closed_loop(points)
-        if closed:
-            points = points[:-1]
-
-        # Add vertices at ceiling height
-        verts = [bm.verts.new(Vector((p.x, p.y, height))) for p in points]
-        bm.verts.ensure_lookup_table()
-
-        # Create boundary edges
-        edges = []
-        for i in range(len(verts)):
-            next_i = (i + 1) % len(verts)
-            edge = bm.edges.new((verts[i], verts[next_i]))
-            edges.append(edge)
-
-        # Fill to create faces
-        bmesh.ops.triangle_fill(bm, use_beauty=True, use_dissolve=False, edges=edges)
-
-        # Flip normals so they face downward (into the room)
-        bmesh.ops.reverse_faces(bm, faces=bm.faces[:])
-
-        # UV unwrap - planar projection from top down (X,Y -> U,V)
-        uv_layer = bm.loops.layers.uv.new("UVMap")
-        for face in bm.faces:
-            for loop in face.loops:
-                loop[uv_layer].uv = (loop.vert.co.x, loop.vert.co.y)
-
-        bm.to_mesh(mesh)
-        bm.free()
-
-        return obj
+    @classmethod
+    def poll(cls, context):
+        from .ceiling_rooms import editable_ceiling
+        return context.mode == 'OBJECT' and editable_ceiling(context.active_object)
 
     def execute(self, context):
-        props = context.scene.home_builder
-        ceiling_height = props.ceiling_height
+        from .ceiling_rooms import execute_ceilings
+        return execute_ceilings(self, context, context.active_object)
 
-        chains = find_wall_chains()
 
-        if not chains:
-            self.report({'WARNING'}, "No connected walls found")
-            return {'CANCELLED'}
+def _room_grid(lower, upper, spacing, offset):
+    dimensions = (upper[0] - lower[0], upper[1] - lower[1])
 
-        # Separate closed loops from open chains
-        closed_chains = []
-        open_chains = []
-        for chain in chains:
-            points = get_room_boundary_points(chain)
-            if len(points) >= 3 and is_closed_loop(points):
-                closed_chains.append((chain, points))
-            else:
-                open_chains.append(chain)
-        
-        ceilings_created = 0
-        
-        if closed_chains:
-            for chain, points in closed_chains:
-                wall = hb_types.GeoNodeWall(chain[0])
-                chain_height = wall.get_input('Height')
-                if chain_height is None or chain_height == 0:
-                    chain_height = ceiling_height
+    def axis(index):
+        span = max(0., dimensions[index] - 2. * offset)
+        number = max(1, int(span / spacing) + 1)
+        if number == 1:
+            return [(upper[index] + lower[index]) / 2.]
+        step = span / (number - 1)
+        return [lower[index] + offset + i * step for i in range(number)]
+    return [(x, y) for x in axis(0) for y in axis(1)]
 
-                name = "Ceiling" if ceilings_created == 0 else f"Ceiling.{ceilings_created:03d}"
-                ceiling_obj = self.create_ceiling_mesh(name, points, chain_height)
-                ceiling_obj['IS_CEILING_BP'] = True
-                ceilings_created += 1
-        else:
-            for chain in open_chains:
-                all_points = []
-                for w in chain:
-                    start, end = get_wall_endpoints(w)
-                    all_points.append(Vector((start.x, start.y, 0)))
-                    all_points.append(Vector((end.x, end.y, 0)))
-                
-                if len(all_points) < 2:
-                    continue
-                
-                min_x = min(p.x for p in all_points)
-                max_x = max(p.x for p in all_points)
-                min_y = min(p.y for p in all_points)
-                max_y = max(p.y for p in all_points)
-                
-                if abs(max_x - min_x) < 0.01:
-                    max_x = min_x + 3.0
-                if abs(max_y - min_y) < 0.01:
-                    max_y = min_y + 3.0
-                
-                points = [
-                    Vector((min_x, min_y, 0)),
-                    Vector((max_x, min_y, 0)),
-                    Vector((max_x, max_y, 0)),
-                    Vector((min_x, max_y, 0)),
-                    Vector((min_x, min_y, 0)),
-                ]
 
-                wall = hb_types.GeoNodeWall(chain[0])
-                chain_height = wall.get_input('Height')
-                if chain_height is None or chain_height == 0:
-                    chain_height = ceiling_height
+def _light_advanced(layout, operator, *, adding=False):
+    layout.prop(operator, 'advanced')
+    if operator.advanced:
+        col = layout.column(align=True)
+        col.prop(operator, 'light_power')
+        col.prop(operator, 'light_radius')
+        col.label(text="Blender render power, not fixture wattage.")
+        if adding and operator.fixture_type == room_lights.POINT:
+            col.prop(operator, 'ceiling_offset')
 
-                name = "Ceiling" if ceilings_created == 0 else f"Ceiling.{ceilings_created:03d}"
-                ceiling_obj = self.create_ceiling_mesh(name, points, chain_height)
-                ceiling_obj['IS_CEILING_BP'] = True
-                ceilings_created += 1
 
-        if ceilings_created > 0:
-            self.report({'INFO'}, f"Created {ceilings_created} ceiling(s)")
-            return {'FINISHED'}
-        else:
-            self.report({'WARNING'}, "Could not create ceiling - insufficient wall data")
-            return {'CANCELLED'}
+def _draw_pot_reference(layout):
+    layout.label(text="Typical 4-inch LED: about 650 lm.")
+    layout.label(text="Blender preset starts at 12 W; adjust for exposure.")
 
 
 class home_builder_walls_OT_add_room_lights(bpy.types.Operator):
     bl_idname = "home_builder_walls.add_room_lights"
     bl_label = "Add Room Lights"
-    bl_description = "Add ceiling lights to the room based on room size"
+    bl_description = "Place a light grid on the selected ceiling(s), or use the room ceiling layout"
     bl_options = {'UNDO'}
 
+    fixture_type: bpy.props.EnumProperty(name="Fixture Type", items=room_lights.PRESETS)
     light_spacing: bpy.props.FloatProperty(
-        name="Light Spacing",
-        description="Minimum spacing between lights",
-        default=1.2192,  # 4 feet in meters
-        min=0.3,
-        max=3.0,
-        unit='LENGTH'
-    )  # type: ignore
-
+        name="Light Spacing", description="Minimum spacing between lights",
+        default=1.2192, min=.3, max=3., unit='LENGTH',
+    )
     edge_offset: bpy.props.FloatProperty(
-        name="Edge Offset",
-        description="Distance from walls to lights",
-        default=0.6096,  # 2 feet in meters
-        min=0.15,
-        max=1.5,
-        unit='LENGTH'
-    )  # type: ignore
-
-    light_power: bpy.props.FloatProperty(
-        name="Light Power",
-        description="Power of each light in watts",
-        default=200.0,
-        min=10.0,
-        max=2000.0,
-        unit='POWER'
-    )  # type: ignore
-
+        name="Edge Offset", description="Distance from the room bounding edges to the outer row",
+        default=.6096, min=.15, max=1.5, unit='LENGTH',
+    )
     light_temperature: bpy.props.FloatProperty(
-        name="Color Temperature",
-        description="Light color temperature in Kelvin",
-        default=3000.0,
-        min=2000.0,
-        max=6500.0
-    )  # type: ignore
-
+        name="Color Temperature (K)", description="3000 K warm white; 4000 K neutral white",
+        default=3000., min=2000., max=6500., step=100., precision=0,
+    )
+    advanced: bpy.props.BoolProperty(name="Advanced Controls", options={'SKIP_SAVE'})
+    light_power: bpy.props.FloatProperty(
+        name="Blender Light Power", description="Render-engine power, not the electrical rating of the fixture",
+        default=room_lights.POT_POWER, min=0., max=2000., unit='POWER',
+    )
+    light_radius: bpy.props.FloatProperty(
+        name="Shadow Softness", description="Radius of the light source; larger makes the shadow edge softer",
+        default=room_lights.POT_RADIUS, min=0., max=1., unit='LENGTH',
+    )
     ceiling_offset: bpy.props.FloatProperty(
-        name="Ceiling Offset", 
-        description="Distance below ceiling to place lights",
-        default=0.0254,  # 1 inch
-        min=0.0,
-        max=0.3,
-        unit='LENGTH'
-    )  # type: ignore
+        name="Ceiling Offset", description="Distance below ceiling for the custom point source",
+        default=.0254, min=0., max=.3, unit='LENGTH',
+    )
 
-    def calculate_light_grid(self,boundary_points, min_spacing=1.2, edge_offset=0.6):
-        """
-        Calculate optimal light positions for a room.
-        
-        Args:
-            boundary_points: List of 2D vectors defining room boundary
-            min_spacing: Minimum spacing between lights in meters
-            edge_offset: Distance from walls in meters
-        
-        Returns:
-            List of 2D Vector positions for lights
-        """
-
-        xs = [p.x for p in boundary_points]
-        ys = [p.y for p in boundary_points]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        
-        width = max_x - min_x
-        depth = max_y - min_y
-        
-        usable_width = width - (2 * edge_offset)
-        usable_depth = depth - (2 * edge_offset)
-        
-        # Ensure at least 1 light
-        num_x = max(1, int(usable_width / min_spacing) + 1)
-        num_y = max(1, int(usable_depth / min_spacing) + 1)
-        
-        spacing_x = usable_width / max(1, num_x - 1) if num_x > 1 else 0
-        spacing_y = usable_depth / max(1, num_y - 1) if num_y > 1 else 0
-        
-        positions = []
-        start_x = min_x + edge_offset
-        start_y = min_y + edge_offset
-        
-        for i in range(num_x):
-            for j in range(num_y):
-                if num_x == 1:
-                    x = (min_x + max_x) / 2
-                else:
-                    x = start_x + i * spacing_x
-                
-                if num_y == 1:
-                    y = (min_y + max_y) / 2
-                else:
-                    y = start_y + j * spacing_y
-                
-                pos = Vector((x, y))
-                if point_in_polygon(pos, boundary_points):
-                    positions.append(pos)
-        
-        return positions
-
-    def kelvin_to_rgb(self,temperature):
-        """Convert color temperature in Kelvin to RGB values."""
-        # Attempt approximation of blackbody radiation curve
-        temp = temperature / 100.0
-        
-        # Red
-        if temp <= 66:
-            red = 255
+    def _preset_values(self):
+        if self.fixture_type == room_lights.POT:
+            self.light_power, self.light_radius = room_lights.POT_POWER, room_lights.POT_RADIUS
         else:
-            red = temp - 60
-            red = 329.698727446 * (red ** -0.1332047592)
-            red = max(0, min(255, red))
-        
-        # Green
-        if temp <= 66:
-            green = temp
-            green = 99.4708025861 * math.log(green) - 161.1195681661
-        else:
-            green = temp - 60
-            green = 288.1221695283 * (green ** -0.0755148492)
-        green = max(0, min(255, green))
-        
-        # Blue
-        if temp >= 66:
-            blue = 255
-        elif temp <= 19:
-            blue = 0
-        else:
-            blue = temp - 10
-            blue = 138.5177312231 * math.log(blue) - 305.0447927307
-            blue = max(0, min(255, blue))
-        
-        return (red / 255.0, green / 255.0, blue / 255.0)
-
-
-    def create_room_lights(self,light_positions, height, light_power=200, light_temperature=3000):
-        """
-        Create point lights at the specified positions.
-        
-        Args:
-            light_positions: List of 2D Vector positions
-            height: Z height for lights
-            light_power: Power in watts
-            light_temperature: Color temperature in Kelvin
-        
-        Returns:
-            List of created light objects
-        """
-
-        lights = []
-        
-        # Create or get scene-specific collection for lights
-        scene = bpy.context.scene
-        light_collection_name = f"{scene.name} - Lights"
-        if light_collection_name not in bpy.data.collections:
-            light_collection = bpy.data.collections.new(light_collection_name)
-            scene.collection.children.link(light_collection)
-        else:
-            light_collection = bpy.data.collections[light_collection_name]
-            # Ensure it's linked to the current scene
-            if light_collection.name not in scene.collection.children:
-                scene.collection.children.link(light_collection)
-        
-        # Get color from temperature
-        color = self.kelvin_to_rgb(light_temperature)
-        
-        for i, pos in enumerate(light_positions):
-            # Create light data
-            light_data = bpy.data.lights.new(name=f"Room_Light_{i:03d}", type='POINT')
-            light_data.energy = light_power
-            light_data.shadow_soft_size = 0.1  # Soft shadows
-            light_data.color = color
-            
-            # Create light object
-            light_obj = bpy.data.objects.new(name=f"Room_Light_{i:03d}", object_data=light_data)
-            light_obj.location = (pos.x, pos.y, height)
-            
-            # Link to collection
-            light_collection.objects.link(light_obj)
-            
-            # Mark as room light
-            light_obj['IS_ROOM_LIGHT'] = True
-            
-            lights.append(light_obj)
-        
-        return lights
+            self.light_power, self.light_radius = room_lights.POINT_POWER, room_lights.POINT_RADIUS
 
     def invoke(self, context, event):
-        wm = context.window_manager
-        return wm.invoke_props_dialog(self, width=350)
+        self._last_added_type = self.fixture_type
+        if not (self.properties.is_property_set('light_power') or self.properties.is_property_set('light_radius')):
+            self._preset_values()
+        return context.window_manager.invoke_props_dialog(self, width=405)
+
+    def check(self, context):
+        if self.fixture_type != getattr(self, '_last_added_type', self.fixture_type):
+            self._preset_values()
+            self._last_added_type = self.fixture_type
+        return True
 
     def draw(self, context):
         layout = self.layout
-        
+        box = layout.box()
+        box.prop(self, 'fixture_type')
+        box.prop(self, 'light_temperature')
+        if self.fixture_type == room_lights.POT:
+            _draw_pot_reference(box)
+        _light_advanced(box, self, adding=True)
         box = layout.box()
         box.label(text="Light Placement", icon='LIGHT')
         col = box.column(align=True)
         col.prop(self, 'light_spacing')
         col.prop(self, 'edge_offset')
-        
-        box = layout.box()
-        box.label(text="Light Properties", icon='OUTLINER_OB_LIGHT')
-        col = box.column(align=True)
-        col.prop(self, 'light_power')
-        col.prop(self, 'light_temperature')
-        col.prop(self, 'ceiling_offset')
+        box.label(text="Select a ceiling to limit placement to that room.")
+
+    def _wall_positions(self, context):
+        chains = find_wall_chains()
+        closed = [(chain, points) for chain in chains
+                  if len(points := get_room_boundary_points(chain)) >= 4 and is_closed_loop(points)]
+        chosen = closed if closed else [(chain, []) for chain in chains]
+        for chain, points in chosen:
+            wall = hb_types.GeoNodeWall(chain[0])
+            if not wall.has_modifier() or not wall.has_input('Height'):
+                continue
+            height = wall.get_input('Height') or context.scene.home_builder.ceiling_height
+            elevation = (chain[0].matrix_world @ Vector((0., 0., height))).z
+            if not points:
+                points = [p for obj in chain for p in get_wall_endpoints(obj)]
+            if not points:
+                continue
+            lower = tuple(min(p[i] for p in points) for i in range(2))
+            upper = tuple(max(p[i] for p in points) for i in range(2))
+            if not closed and min(upper[i] - lower[i] for i in range(2)) < .02:
+                # A single open wall gives no room in which to place a fixture.
+                continue
+            for x, y in _room_grid(lower, upper, self.light_spacing, self.edge_offset):
+                if not closed or point_in_polygon(Vector((x, y)), points):
+                    yield x, y, elevation
+
+    def _ceiling_positions(self, surfaces):
+        for surface in surfaces:
+            got_one = False
+            for x, y in _room_grid(surface.lower, surface.upper, self.light_spacing, self.edge_offset):
+                level = surface.level_at(x, y)
+                if level is not None:
+                    got_one = True
+                    yield x, y, level
+            if not got_one:
+                # Small concave rooms can miss their sole grid sample. Prefer
+                # the center of a large actual face, not the middle of a hole.
+                polys = sorted(surface.obj.data.polygons, key=lambda p: (-p.area, p.index))
+                for poly in polys:
+                    center = surface.matrix @ poly.center
+                    level = surface.level_at(center.x, center.y)
+                    if level is not None:
+                        yield center.x, center.y, level
+                        break
 
     def execute(self, context):
-        chains = find_wall_chains()
-        
-        if not chains:
-            self.report({'WARNING'}, "No connected walls found")
+        context.view_layer.update()
+        surfaces = room_lights.sample_ceilings(context, selected_first=True)
+        positions = list(self._ceiling_positions(surfaces) if surfaces else self._wall_positions(context))
+        if not positions:
+            self.report({'WARNING'}, "No ceiling or room area found for light placement.")
             return {'CANCELLED'}
-        
-        # Separate closed loops from open chains
-        closed_chains = []
-        open_chains = []
-        for chain in chains:
-            points = get_room_boundary_points(chain)
-            if len(points) >= 3 and is_closed_loop(points):
-                closed_chains.append((chain, points))
-            else:
-                open_chains.append(chain)
-        
-        # Use closed loops if available, otherwise fall back to bounding boxes
-        use_chains = []
-        if closed_chains:
-            use_chains = [(chain, points) for chain, points in closed_chains]
-        else:
-            for chain in open_chains:
-                all_points = []
-                for w in chain:
-                    start, end = get_wall_endpoints(w)
-                    all_points.append(Vector((start.x, start.y, 0)))
-                    all_points.append(Vector((end.x, end.y, 0)))
-                if len(all_points) < 2:
-                    continue
-                min_x = min(p.x for p in all_points)
-                max_x = max(p.x for p in all_points)
-                min_y = min(p.y for p in all_points)
-                max_y = max(p.y for p in all_points)
-                if abs(max_x - min_x) < 0.01:
-                    max_x = min_x + 3.0
-                if abs(max_y - min_y) < 0.01:
-                    max_y = min_y + 3.0
-                points = [
-                    Vector((min_x, min_y, 0)),
-                    Vector((max_x, min_y, 0)),
-                    Vector((max_x, max_y, 0)),
-                    Vector((min_x, max_y, 0)),
-                    Vector((min_x, min_y, 0)),
-                ]
-                use_chains.append((chain, points))
-        
-        total_lights = 0
-        
-        for chain, points in use_chains:
-            
-            # Get ceiling height from first wall in chain
-            wall = hb_types.GeoNodeWall(chain[0])
-            ceiling_height = wall.get_input('Height')
-            
-            # Calculate light positions
-            light_positions = self.calculate_light_grid(
-                points, 
-                min_spacing=self.light_spacing, 
-                edge_offset=self.edge_offset
-            )
-            
-            if not light_positions:
+        pot = self.fixture_type == room_lights.POT
+        allow_advanced = self.advanced or not hasattr(self, '_last_added_type')
+        power = (self.light_power if allow_advanced and self.properties.is_property_set('light_power')
+                 else room_lights.POT_POWER if pot else room_lights.POINT_POWER)
+        radius = (self.light_radius if allow_advanced and self.properties.is_property_set('light_radius')
+                  else room_lights.POT_RADIUS if pot else room_lights.POINT_RADIUS)
+        # De-duplicate only coincident placements within this operation. Rooms
+        # or ceilings at different elevations can still get their own grids.
+        seen = set()
+        counter = 0
+        for position in positions:
+            point_key = tuple(round(i, 5) for i in position)
+            if point_key in seen:
                 continue
-            
-            # Create lights
-            lights = self.create_room_lights(
-                light_positions,
-                height=ceiling_height - self.ceiling_offset,
-                light_power=self.light_power,
-                light_temperature=self.light_temperature
-            )
-            
-            total_lights += len(lights)
-        
-        if total_lights > 0:
-            self.report({'INFO'}, f"Created {total_lights} light(s)")
-            return {'FINISHED'}
-        else:
-            self.report({'WARNING'}, "No closed wall loops found for light placement")
-            return {'CANCELLED'}
+            seen.add(point_key)
+            room_lights.create(context.scene, position, self.fixture_type, self.light_temperature,
+                               power, radius, self.ceiling_offset)
+            counter += 1
+        self.report({'INFO'}, f"Created {counter} room light(s)")
+        return {'FINISHED'}
 
+
+_LIGHT_SCOPE = [
+    ('AUTO', 'Selection if Any', 'Use selected fixtures, or all room lights if none are selected'),
+    ('SELECTED', 'Selected Lights', 'Work on selected lights or visible pot-light trim'),
+    ('ALL', 'All Room Lights', 'Work on every local room light in this scene'),
+]
 
 
 class home_builder_walls_OT_delete_room_lights(bpy.types.Operator):
     bl_idname = "home_builder_walls.delete_room_lights"
-    bl_label = "Delete All Room Lights"
-    bl_description = "Remove all room lights from the scene"
+    bl_label = "Delete Room Lights"
+    bl_description = "Remove selected or all room lights and their managed visible trim"
     bl_options = {'UNDO'}
 
-    def execute(self, context):
-        light_objects = [obj for obj in context.scene.objects if obj.get('IS_ROOM_LIGHT')]
+    scope: bpy.props.EnumProperty(name="Apply To", items=_LIGHT_SCOPE, options={'SKIP_SAVE'})
 
+    def invoke(self, context, event):
+        if not self.properties.is_property_set('scope'):
+            self.scope = 'SELECTED' if room_lights.selected(context) else 'ALL'
+        return context.window_manager.invoke_props_dialog(self, width=370)
+
+    def draw(self, context):
+        self.layout.prop(self, 'scope')
+        count = len(room_lights.targets(context, self.scope))
+        self.layout.label(text=f"Delete {count} light(s) and their attached trims?")
+
+    def execute(self, context):
+        light_objects = room_lights.targets(context, self.scope)
         if not light_objects:
-            self.report({'WARNING'}, "No room lights found")
+            self.report({'WARNING'}, "No room lights in the chosen scope")
             return {'CANCELLED'}
 
         count = len(light_objects)
         for obj in light_objects:
-            light_data = obj.data
-            bpy.data.objects.remove(obj, do_unlink=True)
-            if light_data and light_data.users == 0:
-                bpy.data.lights.remove(light_data)
+            room_lights.remove(obj)
 
-        # Remove empty lights collection (check both old and new naming)
         scene = context.scene
-        for col_name in [f"{scene.name} - Lights", "Room Lights"]:
-            if col_name in bpy.data.collections:
-                col = bpy.data.collections[col_name]
-                if len(col.objects) == 0:
-                    if col.name in scene.collection.children:
-                        scene.collection.children.unlink(col)
+        for col_name in (f"{scene.name} - Lights", "Room Lights"):
+            col = bpy.data.collections.get(col_name)
+            if col and col.name in scene.collection.children and not (col.objects or col.children):
+                scene.collection.children.unlink(col)
+                if col.users == 0:
                     bpy.data.collections.remove(col)
-
         self.report({'INFO'}, f"Deleted {count} room light(s)")
         return {'FINISHED'}
 
@@ -2664,99 +2450,85 @@ class home_builder_walls_OT_delete_room_lights(bpy.types.Operator):
 class home_builder_walls_OT_update_room_lights(bpy.types.Operator):
     bl_idname = "home_builder_walls.update_room_lights"
     bl_label = "Update Room Lights"
-    bl_description = "Update properties of all room lights"
+    bl_description = "Set temperature or choose a preset for selected or all room lights"
     bl_options = {'UNDO'}
 
-    light_power: bpy.props.FloatProperty(
-        name="Light Power",
-        description="Power of each light in watts",
-        default=200.0,
-        min=10.0,
-        max=2000.0,
-        unit='POWER'
-    )  # type: ignore
-
+    scope: bpy.props.EnumProperty(name="Apply To", items=_LIGHT_SCOPE, options={'SKIP_SAVE'})
+    fixture_type: bpy.props.EnumProperty(
+        name="Fixture Type", items=[('KEEP', 'Keep Existing', 'Do not convert the selected lights'),
+                                    *room_lights.PRESETS], options={'SKIP_SAVE'},
+    )
     light_temperature: bpy.props.FloatProperty(
-        name="Color Temperature",
-        description="Light color temperature in Kelvin",
-        default=3000.0,
-        min=2000.0,
-        max=6500.0
-    )  # type: ignore
-
+        name="Color Temperature (K)", description="3000 K warm white; 4000 K neutral white",
+        default=3000., min=2000., max=6500., step=100., precision=0,
+    )
+    advanced: bpy.props.BoolProperty(name="Advanced Controls", options={'SKIP_SAVE'})
+    light_power: bpy.props.FloatProperty(
+        name="Blender Light Power", description="Render-engine power, not the electrical rating of the fixture",
+        default=room_lights.POT_POWER, min=0., max=2000., unit='POWER',
+    )
     light_radius: bpy.props.FloatProperty(
-        name="Shadow Softness",
-        description="Light source radius for shadow softness",
-        default=0.1,
-        min=0.0,
-        max=1.0,
-        unit='LENGTH'
-    )  # type: ignore
-
-    def kelvin_to_rgb(self, temperature):
-        temp = temperature / 100.0
-        if temp <= 66:
-            red = 255
-        else:
-            red = temp - 60
-            red = 329.698727446 * (red ** -0.1332047592)
-            red = max(0, min(255, red))
-        if temp <= 66:
-            green = temp
-            green = 99.4708025861 * math.log(green) - 161.1195681661
-        else:
-            green = temp - 60
-            green = 288.1221695283 * (green ** -0.0755148492)
-        green = max(0, min(255, green))
-        if temp >= 66:
-            blue = 255
-        elif temp <= 19:
-            blue = 0
-        else:
-            blue = temp - 10
-            blue = 138.5177312231 * math.log(blue) - 305.0447927307
-            blue = max(0, min(255, blue))
-        return (red / 255.0, green / 255.0, blue / 255.0)
+        name="Shadow Softness", description="Radius of the light source; larger makes the shadow edge softer",
+        default=room_lights.POT_RADIUS, min=0., max=1., unit='LENGTH',
+    )
 
     def invoke(self, context, event):
-        # Initialize from existing lights
-        light_objects = [obj for obj in context.scene.objects if obj.get('IS_ROOM_LIGHT')]
+        if not self.properties.is_property_set('scope'):
+            self.scope = 'SELECTED' if room_lights.selected(context) else 'ALL'
+        light_objects = room_lights.targets(context, self.scope)
         if not light_objects:
-            self.report({'WARNING'}, "No room lights found")
+            self.report({'WARNING'}, "No room lights in the chosen scope")
             return {'CANCELLED'}
+        active = room_lights.light_from(context.active_object)
+        first = active if active in light_objects else light_objects[0]
+        self.light_temperature = room_lights.temperature_for(first)
+        self.light_power = first.data.energy
+        self.light_radius = getattr(first.data, 'shadow_soft_size', room_lights.POINT_RADIUS)
+        # For an explicit conversion, initialize advanced values to the new
+        # preset until the user edits them; ordinary updates show old values.
+        self._previous_type = self.fixture_type
+        return context.window_manager.invoke_props_dialog(self, width=405)
 
-        # Read current values from first light
-        first_light = light_objects[0].data
-        self.light_power = first_light.energy
-        self.light_radius = first_light.shadow_soft_size
-
-        wm = context.window_manager
-        return wm.invoke_props_dialog(self, width=350)
+    def check(self, context):
+        if self.fixture_type != getattr(self, '_previous_type', self.fixture_type):
+            if self.fixture_type == room_lights.POT:
+                self.light_power = room_lights.POT_POWER
+                self.light_radius = room_lights.POT_RADIUS
+            elif self.fixture_type == room_lights.POINT:
+                self.light_power = room_lights.POINT_POWER
+                self.light_radius = room_lights.POINT_RADIUS
+            self._previous_type = self.fixture_type
+        return True
 
     def draw(self, context):
         layout = self.layout
         box = layout.box()
-        box.label(text="Light Properties", icon='OUTLINER_OB_LIGHT')
-        col = box.column(align=True)
-        col.prop(self, 'light_power')
-        col.prop(self, 'light_temperature')
-        col.prop(self, 'light_radius')
+        box.prop(self, 'scope')
+        box.prop(self, 'fixture_type')
+        box.prop(self, 'light_temperature')
+        if self.fixture_type == room_lights.POT:
+            _draw_pot_reference(box)
+        _light_advanced(box, self)
 
     def execute(self, context):
-        light_objects = [obj for obj in context.scene.objects if obj.get('IS_ROOM_LIGHT')]
-
-        if not light_objects:
-            self.report({'WARNING'}, "No room lights found")
+        lights = room_lights.targets(context, self.scope)
+        if not lights:
+            self.report({'WARNING'}, "No room lights in the chosen scope")
             return {'CANCELLED'}
-
-        color = self.kelvin_to_rgb(self.light_temperature)
-
-        for obj in light_objects:
-            obj.data.energy = self.light_power
-            obj.data.color = color
-            obj.data.shadow_soft_size = self.light_radius
-
-        self.report({'INFO'}, f"Updated {len(light_objects)} room light(s)")
+        power = self.light_power if self.advanced or self.properties.is_property_set('light_power') else None
+        radius = self.light_radius if self.advanced or self.properties.is_property_set('light_radius') else None
+        # GUI initialization sets advanced values for display. Do not apply
+        # them unless requested; preserve the settings of each selected light.
+        if hasattr(self, '_previous_type') and not self.advanced:
+            power = radius = None
+        temperature = self.light_temperature if self.properties.is_property_set('light_temperature') else None
+        converting = self.fixture_type == room_lights.POT and any(not room_lights.is_pot(o) for o in lights)
+        if converting:
+            context.view_layer.update()
+        ceilings = room_lights.sample_ceilings(context) if converting else []
+        for obj in lights:
+            room_lights.update(context.scene, obj, self.fixture_type, temperature, power, radius, ceilings)
+        self.report({'INFO'}, f"Updated {len(lights)} room light(s)")
         return {'FINISHED'}
 
 
@@ -4036,6 +3808,7 @@ classes = (
     home_builder_walls_OT_draw_floor_cutter,
     home_builder_walls_OT_draw_wall_cutter,
     home_builder_walls_OT_add_ceiling,
+    FZM_OT_update_ceiling_outline,
     home_builder_walls_OT_add_room_lights,
     home_builder_walls_OT_setup_world_lighting,
     home_builder_walls_OT_delete_room_lights,
