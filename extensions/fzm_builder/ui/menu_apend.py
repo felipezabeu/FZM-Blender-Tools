@@ -1,11 +1,15 @@
 import bpy
 
+from ..operators import door_units
+
 def draw_object_mode_right_click_menu(self, context):
     layout = self.layout
     layout.operator_context = 'INVOKE_AREA'
     obj = context.object
     menu_id = ""
-    if obj and "MENU_ID" in obj and obj["MENU_ID"] != "":
+    if door_units.cage_for(obj):
+        menu_id = "HOME_BUILDER_MT_door_commands"
+    elif obj and "MENU_ID" in obj and obj["MENU_ID"] != "":
         menu_id = obj["MENU_ID"]
 
     if menu_id and hasattr(bpy.types, menu_id):

@@ -90,6 +90,8 @@ class HOME_BUILDER_MT_door_commands(bpy.types.Menu):
             layout.operator(door_pose.TOGGLE, text=pose_command,
                             icon='LOOP_BACK' if pose_command == 'Close Door' else 'PLAY')
             layout.separator()
+        if bpy.ops.fzm_builder.move_door_along_wall.poll():
+            layout.operator("fzm_builder.move_door_along_wall", icon='TRANSFORM_MOVE')
         if bpy.ops.fzm_builder.edit_door.poll():
             layout.operator("fzm_builder.edit_door", icon='PREFERENCES')
         if bpy.ops.home_builder_doors_windows.toggle_double_door.poll():

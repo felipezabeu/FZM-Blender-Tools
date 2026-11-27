@@ -210,17 +210,25 @@ def room_runs(context, floor):
                 obj = run.face.wall.obj
                 wall = hb_types.GeoNodeWall(obj)
                 inverse = obj.matrix_world.inverted_safe()
+                thickness = wall.get_input('Thickness')
+                y = (inverse @ Vector((*run.face.origin, level))).y
+                far = abs(y - thickness) < abs(y)
                 left = perimeter.end_point(run, True, 0, previous_edge, prev_run) if j == 0 else run.face.at(run.edge, run.left)
                 right = perimeter.end_point(run, False, 0, next_edge, next_run) if j == len(runs)-1 else run.face.at(run.edge, run.right)
                 a, b = (inverse @ Vector((*p, level)) for p in (left, right))
                 start, end = sorted((a.x, b.x))
-                start = max(0., start)
-                end = min(wall.get_input('Length'), end)
+                # The wall's nominal length measures its datum side. At a miter
+                # the opposite face can extend beyond either datum endpoint,
+                # leaving an old-color strip if clamped to [0, Length].
+                corners = run.face.wall.corners
+                if corners is not None:
+                    face = (corners[3], corners[2]) if far else corners[:2]
+                    low, high = sorted((inverse @ Vector((*p, level))).x for p in face)
+                else:
+                    low, high = 0., wall.get_input('Length')
+                start, end = max(low, start), min(high, end)
                 if end - start <= perimeter.EPS:
                     continue
-                thickness = wall.get_input('Thickness')
-                y = (inverse @ Vector((*run.face.origin, level))).y
-                far = abs(y - thickness) < abs(y)
                 socket = next((name for name in SIDE_SOCKETS[far] if wall.has_input(name)), None)
                 if not socket:
                     continue

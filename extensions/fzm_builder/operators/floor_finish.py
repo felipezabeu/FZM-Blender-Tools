@@ -10,7 +10,7 @@ import bpy
 from .floor_tiles import apply_floor_base_finish, floor_surface_indices, get_spec
 from .floor_wood import BOARD_DIMENSIONS, BOARD_LENGTH, BOARD_WIDTH, attach_board_shader
 from .tile_shader import base_material
-from .tile_catalog import TILE_FINISHES, attach_tile_finish, finish_entry
+from .tile_catalog import PORCELAIN_PREFIX, TILE_FINISHES, attach_tile_finish, finish_entry
 
 
 DEFAULTS = (
@@ -218,6 +218,11 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                         self.board_width = width
                     if not self.properties.is_property_set("board_length"):
                         self.board_length = length
+            elif row and row.get("texture", "").startswith(PORCELAIN_PREFIX):
+                if not self.properties.is_property_set("mode"):
+                    self.mode = 'CATALOG'
+                if not self.properties.is_property_set("preset"):
+                    self.preset = source
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def draw(self, context):
@@ -233,6 +238,8 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                 if get_spec(context.active_object):
                     layout.label(text="Tile joints are active on this floor.", icon='INFO')
                     layout.label(text="Choose No Tile Layout to show the wood joints.")
+            if row and row.get("texture", "").startswith(PORCELAIN_PREFIX) and not get_spec(context.active_object):
+                layout.label(text="Set Floor Tile Layout to shuffle the faces tile by tile.", icon='INFO')
         else:
             if self.mode == 'COLOR':
                 layout.prop(self, "color")
