@@ -8,7 +8,7 @@ from .ui import door_pose, menu_apend, room_tools, wall_edit
 from .ui import menus
 from .operators import walls
 from .operators import finishes
-from .operators import doors_windows, door_swing
+from .operators import doors_windows, door_swing, door_move, door_units
 from .operators import layouts
 from .operators import rooms
 from .operators import details
@@ -26,7 +26,7 @@ from bpy.app.handlers import persistent
 bl_info = {
     "name": "FZM Builder",
     "author": "Andrew Peel",
-    "version": (5, 1, 8),
+    "version": (5, 1, 22),
     "blender": (5, 0, 0),
     "location": "3D Viewport Sidebar",
     "description": "Library for Designing Interior Spaces",
@@ -54,6 +54,7 @@ def load_file_post(scene):
     # Ensure a default frameless style is created
     main_scene.hb_frameless.ensure_default_style()
     door_swing.upgrade_saved_annotations()
+    door_units.protect_saved_doors(bpy.data.objects)
 
 
 class Home_Builder_AddonPreferences(bpy.types.AddonPreferences):
@@ -215,6 +216,7 @@ def register():
     doors_windows.register()
     room_tools.register()
     door_pose.register()
+    door_move.register()
     wall_edit.register()
     export.register()
     ops_stairs.register()
@@ -251,6 +253,7 @@ def unregister():
     rooms.unregister()
     details.unregister()
     wall_edit.unregister()
+    door_move.unregister()
     door_pose.unregister()
     doors_windows.unregister()
     export.unregister()

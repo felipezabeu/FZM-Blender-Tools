@@ -194,9 +194,13 @@ def _paint_plan(host,cut):
                 continue
             base,side = paint.base_material(material),material[paint.SIDE]
             choices = []
-            for a,b in ((0.,cut),(cut,host.length)):
-                spans = tuple(paint.Region(r.floor,max(a,r.start)-a,min(b,r.end)-a,r.material)
-                              for r in paint.get_regions(material) if min(b,r.end)-max(a,r.start)>EPS)
+            # The new cut is square, but the two outside ends retain their
+            # physical miters (which can run outside the old wall datum).
+            for low, high, offset in ((float('-inf'), cut, 0.), (cut, float('inf'), cut)):
+                spans = tuple(paint.Region(r.floor, max(low, r.start)-offset,
+                                           min(high, r.end)-offset, r.material)
+                              for r in paint.get_regions(material)
+                              if min(high, r.end)-max(low, r.start)>EPS)
                 new = paint.make_finish(base,side,spans,material.name)
                 if paint.is_finish(new):
                     created.append(new)

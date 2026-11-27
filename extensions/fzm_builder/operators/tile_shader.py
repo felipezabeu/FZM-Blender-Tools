@@ -6,6 +6,7 @@ import bpy
 
 from ..tile_core import tile_pitch
 from .floor_wood import hide_board_pattern
+from .tile_catalog import PORCELAIN_TAG, apply_directional_porcelain
 
 
 PATTERNS = (('STACK', "Stack", "Straight aligned joints"),
@@ -22,7 +23,7 @@ def reset_mosaic_size(operator, context):
         operator.mosaic_size = MOSAIC_SIZE[operator.tile_shape]
 
 
-TILE_GROUP_VERSION = 1
+TILE_GROUP_VERSION = 2
 TILE_MATERIAL = "FZM_TILE_SURFACE"
 TILE_BASE = "FZM_TILE_BASE_MATERIAL"
 
@@ -61,8 +62,8 @@ def validate(spec):
 
 
 def _node_group(shape='RECTANGLE'):
-    name = ("FZM Metric Tile Layout v1" if shape in {'RECTANGLE', 'SQUARE'}
-            else f"FZM Metric Mosaic {shape} v1")
+    name = ("FZM Metric Tile Layout v2" if shape in {'RECTANGLE', 'SQUARE'}
+            else f"FZM Metric Mosaic {shape} v2")
     group = bpy.data.node_groups.get(name)
     if group and group.get('fzm_metric_tile_group') == TILE_GROUP_VERSION:
         return group
@@ -73,7 +74,8 @@ def _node_group(shape='RECTANGLE'):
               ('Pitch V', 'NodeSocketFloat'), ('Cycle', 'NodeSocketFloat'),
               ('Angle', 'NodeSocketFloat'), ('Phase U', 'NodeSocketFloat'),
               ('Phase V', 'NodeSocketFloat'))
-    outputs = (('Grout', 'NodeSocketFloat'), ('Tile UV', 'NodeSocketVector'))
+    outputs = (('Grout', 'NodeSocketFloat'), ('Tile UV', 'NodeSocketVector'),
+               ('Tile Column', 'NodeSocketFloat'), ('Tile Row', 'NodeSocketFloat'))
     for direction, items in (('INPUT', inputs), ('OUTPUT', outputs)):
         for label, typ in items:
             group.interface.new_socket(name=label, in_out=direction, socket_type=typ)
@@ -136,6 +138,13 @@ def _node_group(shape='RECTANGLE'):
         links.new(run('ADD', .5, run('DIVIDE', x, src.outputs['Tile Width'])), combine.inputs['X'])
         links.new(run('ADD', .5, run('DIVIDE', y, image_height)), combine.inputs['Y'])
         links.new(combine.outputs[0], dst.inputs['Tile UV'])
+        # Circle/hex centres alternate across two half-shifted sub-lattices.
+        # Recover the centre from the chosen local offset and round onto
+        # half-pitch indices so the random seed is stable over the whole tile.
+        for coord, local, pitch, label in ((u, x, px, 'Tile Column'),
+                                           (v, y, py, 'Tile Row')):
+            center_id = run('ROUND', run('DIVIDE', run('MULTIPLY', run('SUBTRACT', coord, local), 2.), pitch))
+            links.new(center_id, dst.inputs[label])
         return group
 
     row = run('FLOOR', run('DIVIDE', v, src.outputs['Pitch V']))
@@ -151,6 +160,8 @@ def _node_group(shape='RECTANGLE'):
     links.new(run('DIVIDE', s, src.outputs['Tile Width']), combine.inputs['X'])
     links.new(run('DIVIDE', t, src.outputs['Tile Height']), combine.inputs['Y'])
     links.new(combine.outputs[0], dst.inputs['Tile UV'])
+    links.new(run('FLOOR', run('DIVIDE', u, src.outputs['Pitch U'])), dst.inputs['Tile Column'])
+    links.new(row, dst.inputs['Tile Row'])
     return group
 
 
@@ -235,7 +246,9 @@ def tile_material(source, settings, *, one_image_per_tile=False):
         links.new(base_input, mix.inputs[1])
         links.new(grout.outputs[0], mix.inputs[2])
         links.new(mix.outputs[0], output.inputs['Surface'])
-        if one_image_per_tile:
+        if source is not None and source.get(PORCELAIN_TAG):
+            apply_directional_porcelain(mat, layout)
+        elif one_image_per_tile:
             for image in (node for node in nodes if node.type == 'TEX_IMAGE'):
                 links.new(layout.outputs['Tile UV'], image.inputs['Vector'])
                 image.extension = 'EXTEND'

@@ -43,9 +43,8 @@ PHOTO_SHAKER_STYLES = {nd.STYLE_SHAKER, nd.STYLE_SHAKER_2, nd.STYLE_SHAKER_5}
 
 
 def cage_for(obj):
-    if obj and obj.get(VISUAL):
-        obj = obj.parent
-    return obj if obj and obj.get('IS_ENTRY_DOOR_BP') and not obj.get(nd.TYPE_KEY) else None
+    obj = nd.cage_for(obj)
+    return obj if obj and not obj.get(nd.TYPE_KEY) else None
 
 
 def swing_for(door):

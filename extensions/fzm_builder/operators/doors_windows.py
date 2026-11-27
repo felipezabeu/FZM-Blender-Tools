@@ -7,7 +7,7 @@ from .. import hb_types, hb_snap, hb_placement, units
 import math
 from mathutils import Vector
 from ..hb_details import GeoNodeText
-from . import door_swing
+from . import door_swing, door_units
 from . import door_panel_fill, finishes, hinged_doors, native_doors, window_content
 
 # Single door swing options: (label, {geo node inputs})
@@ -898,6 +898,7 @@ class _PlaceWallObjectBase(bpy.types.Operator, WallObjectPlacementMixin):
                 except (RuntimeError, ValueError, KeyError) as exc:
                     self.report({'WARNING'}, f"Opening placed; cannot display 3D leaf: {exc}")
         if door.get('IS_ENTRY_DOOR_BP'):
+            door_units.protect(door)
             finishes.refresh_opening_baseboards(bpy.context, (door,), self.report)
         return True
 

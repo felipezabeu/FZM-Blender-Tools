@@ -12,7 +12,7 @@ from mathutils import Vector
 from mathutils.geometry import intersect_line_line_2d
 
 from .. import hb_assets, hb_types, hb_utils, paint_palettes
-from . import baseboard_perimeter, room_paint, shower_trim, trim_profiles, wall_baseboard
+from . import baseboard_perimeter, door_units, room_paint, shower_trim, trim_profiles, wall_baseboard
 
 
 CASING = 'FZM_DOOR_CASING'
@@ -344,8 +344,8 @@ def make_casing(context, door, profile, width, projection, material):
     try:
         (door.users_collection[0] if door.users_collection else context.collection).objects.link(casing)
         casing.parent = door
-        casing.hide_select = True
         casing[CASING] = True
+        door_units.protect_part(casing)
         casing['profile'] = profile
         casing['fzm_casing_profile_revision'] = trim_profiles.REVISION if profile != 'FLAT' else 1
         casing['width'] = width

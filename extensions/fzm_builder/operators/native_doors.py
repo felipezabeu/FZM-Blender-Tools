@@ -67,9 +67,8 @@ MAT_SPECS = {
 
 
 def cage_for(obj):
-    if obj is not None and (obj.get(VISUAL_KEY) or obj.get('FZM_HINGED_3D_VISUAL')):
-        obj = obj.parent
-    return obj if obj is not None and obj.get('IS_ENTRY_DOOR_BP') else None
+    from .door_units import cage_for as unit_cage
+    return unit_cage(obj)
 
 
 def visual_for(cage):
