@@ -5,7 +5,8 @@ from .. import hb_details
 from ..operators.shower_fixtures import FIXTURE, fixture_from
 from ..operators.wall_divider import divider_wall
 from ..operators.shower_area import WALL_DIVIDERS
-from ..operators import room_lights
+from ..operators import door_units, room_lights
+from .menus import draw_door_actions
 
 CATEGORY_NAME = "FZM Builder"
 # =============================================================================
@@ -382,10 +383,11 @@ class HOME_BUILDER_PT_room_layout_doors_windows(bpy.types.Panel):
         row.operator('home_builder_doors_windows.place_door', text="Hinged Door", icon='MESH_CUBE')
         row.operator('home_builder_doors_windows.place_open_door', text="Open", icon='MESH_CUBE')
         layout.operator('fzm_builder.place_native_door', icon='MESH_CUBE')
-        row = layout.row(align=True)
-        if bpy.ops.fzm_builder.edit_door.poll():
-            row.operator('fzm_builder.edit_door', icon='PREFERENCES')
-        row.operator('fzm_builder.door_casing', icon='MOD_SOLIDIFY')
+        if door_units.cage_for(context.object):
+            commands = layout.box()
+            commands.label(text="Door Commands")
+            draw_door_actions(commands.column(align=True), context)
+        layout.operator('fzm_builder.door_casing', icon='MOD_SOLIDIFY')
         layout.operator('fzm_builder.wall_paint', text='Door Paint', icon='MATERIAL').target = 'DOORS'
         row = layout.row(align=True)
         row.scale_y = 1.2

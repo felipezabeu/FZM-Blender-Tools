@@ -80,29 +80,34 @@ class HOME_BUILDER_MT_wall_commands(bpy.types.Menu):
         layout.operator("home_builder_walls.delete_wall", text="Delete Wall", icon='X')
 
 
+def draw_door_actions(layout, context):
+    """Draw the same direct actions in the viewport menu and sidebar."""
+    pose_command = door_pose.command_label(context)
+    if pose_command:
+        layout.operator(door_pose.TOGGLE, text=pose_command,
+                        icon='LOOP_BACK' if pose_command == 'Close Door' else 'PLAY')
+    if bpy.ops.fzm_builder.edit_door.poll():
+        layout.operator("fzm_builder.edit_door", icon='PREFERENCES')
+    for name in ('toggle_double_door', 'flip_door_swing', 'flip_door_hand'):
+        op = getattr(bpy.ops.home_builder_doors_windows, name)
+        if op.poll():
+            layout.operator(f"home_builder_doors_windows.{name}")
+
+
+def draw_door_context_actions(layout, context):
+    draw_door_actions(layout, context)
+    if bpy.ops.fzm_builder.move_door_along_wall.poll():
+        layout.operator("fzm_builder.move_door_along_wall", icon='TRANSFORM_MOVE')
+    layout.operator("fzm_builder.door_casing")
+    layout.separator()
+    layout.operator("home_builder_doors_windows.delete_door_window", text="Delete Door").object_type = 'DOOR'
+
+
 class HOME_BUILDER_MT_door_commands(bpy.types.Menu):
     bl_label = "Door Commands"
 
     def draw(self, context):
-        layout = self.layout
-        pose_command = door_pose.command_label(context)
-        if pose_command:
-            layout.operator(door_pose.TOGGLE, text=pose_command,
-                            icon='LOOP_BACK' if pose_command == 'Close Door' else 'PLAY')
-            layout.separator()
-        if bpy.ops.fzm_builder.move_door_along_wall.poll():
-            layout.operator("fzm_builder.move_door_along_wall", icon='TRANSFORM_MOVE')
-        if bpy.ops.fzm_builder.edit_door.poll():
-            layout.operator("fzm_builder.edit_door", icon='PREFERENCES')
-        if bpy.ops.home_builder_doors_windows.toggle_double_door.poll():
-            layout.operator("home_builder_doors_windows.toggle_double_door")
-            layout.operator("home_builder_doors_windows.flip_door_swing")
-            if bpy.ops.home_builder_doors_windows.flip_door_hand.poll():
-                layout.operator("home_builder_doors_windows.flip_door_hand")
-            layout.separator()
-        layout.operator("fzm_builder.door_casing")
-        layout.separator()
-        layout.operator("home_builder_doors_windows.delete_door_window", text="Delete Door").object_type = 'DOOR'
+        draw_door_context_actions(self.layout, context)
 
 
 class HOME_BUILDER_MT_window_commands(bpy.types.Menu):
