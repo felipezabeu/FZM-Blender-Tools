@@ -1,5 +1,7 @@
 import bpy
 
+from .shower_niche_host import MANAGED as SHOWER_NICHE_CUTTER
+
 # Custom properties that mark objects we should DELETE during export prep
 DELETE_FLAGS = {
     'IS_DIMENSION',
@@ -94,6 +96,19 @@ class HOME_BUILDER_OT_prepare_for_export(bpy.types.Operator):
 
         for scene in scenes_to_process:
             context.window.scene = scene
+
+            # Freeze live niche tools at the current settings before their
+            # source modifiers lose their drivers or are converted to mesh.
+            # The native wall Booleans can still use these frozen operands
+            # until the wall geometry is baked below.
+            context.view_layer.update()
+            depsgraph = context.evaluated_depsgraph_get()
+            cutters = [(obj, bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph)))
+                       for obj in scene.objects if obj.type == 'MESH' and obj.get(SHOWER_NICHE_CUTTER)]
+            for obj, mesh in cutters:
+                obj.animation_data_clear()
+                obj.modifiers.clear()
+                obj.data = mesh
 
             # --- PASS 1: Remove all drivers ---
             # Done before conversion so driven values don't interfere with modifier eval.

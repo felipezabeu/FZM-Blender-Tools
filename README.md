@@ -6,8 +6,12 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 
 | Extensão | Versão | Função |
 |---|---:|---|
-| FZM Builder | 5.1.29 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.30 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.30
+
+- Com o **Shower Area** atualizado, selecione o asset e a(s) parede(s) do Builder que ficam atrás dos nichos. Use **N → FZM Builder → Room Layout → Wall Tiles → Cut Wall for Shower Niches**. O corte acompanha os nichos e só altera as paredes selecionadas, sem aplicar alterações destrutivas e sem AutoCut. **Remove Shower Niche Cut** remove o vínculo nas paredes selecionadas.
 
 ### FZM Builder 5.1.29
 
