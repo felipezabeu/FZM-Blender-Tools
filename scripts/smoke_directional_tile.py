@@ -63,6 +63,11 @@ def actual_faces(mat, code, pattern, expect_shape='RECTANGLE'):
     assert active.type == 'TEX_IMAGE' and active.image.packed_file and active.extension == 'EXTEND'
     assert active.image.size[0] > 100 and active.image.size[1] > 100
     assert code in active.image.name and 'r2' in active.image.name
+    # Atlas indexing must remain exact at indices 3 and 6 even on
+    # GPU shaders using approximate reciprocals for division.
+    assert any(n.label == 'Fiada exata da face no slab' and n.operation == 'ADD' for n in nodes if n.type == 'MATH')
+    assert any(n.label == 'Coluna exata da face no slab' and n.operation == 'SUBTRACT' for n in nodes if n.type == 'MATH')
+    assert not any(n.label in {'Linha no atlas', 'Coluna da face no slab'} for n in nodes)
     assert tuple(active.image.size)==(1254,1254)
     layout = next(n for n in nodes if n.type == 'GROUP' and n.node_tree.get('fzm_metric_tile_group') == 2)
     colrow = next(n for n in nodes if n.type == 'COMBXYZ' and n.inputs[0].is_linked

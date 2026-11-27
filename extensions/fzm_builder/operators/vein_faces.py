@@ -38,9 +38,16 @@ def porcelain_color(tree, image_dir, code, col, row, u, v, at=(0, 0)):
     rnd=calc('MINIMUM',(noise.outputs['Value'],0.999999),370,0,'Intervalo estável 0–1')
     idx=calc('FLOOR',(calc('MULTIPLY',(rnd,float(ATLAS_SIDE**2)),550,0,'Nove faces por acabamento'),),
              720,0,'Índice da face (0–8)')
-    sel_u=calc('FLOORED_MODULO',(idx,float(ATLAS_SIDE)),900,0,'Coluna da face no slab')
-    sel_v=calc('FLOOR',(calc('DIVIDE',(idx,float(ATLAS_SIDE)),900,-170,'Linha no atlas'),),
-               1070,-170,'Fiada da face no slab')
+    # idx is an exact integer 0–8. Some GPU backends lower x/3 to an
+    # approximate reciprocal: at idx=3 or 6, floor/division may select
+    # the previous row and floored modulo may return column 3. With
+    # EXTEND that stretches the slab's final pixel column across a tile.
+    # Thresholds and small-integer subtraction are exact on all backends.
+    row1=calc('GREATER_THAN',(idx,2.5),900,-45,'Passou da primeira fiada?')
+    row2=calc('GREATER_THAN',(idx,5.5),900,-225,'Passou da segunda fiada?')
+    sel_v=calc('ADD',(row1,row2),1070,-170,'Fiada exata da face no slab')
+    row_base=calc('MULTIPLY',(sel_v,float(ATLAS_SIDE)),1070,5,'Primeira face da fiada')
+    sel_u=calc('SUBTRACT',(idx,row_base),1250,110,'Coluna exata da face no slab')
     def axis(f,cell,y,label):
         norm=calc('MAXIMUM',(0.,calc('MINIMUM',(f,1.),1080,y,'Limite superior '+label)),1260,y,'Face normalizada '+label)
         start=calc('MULTIPLY_ADD',(cell,1./ATLAS_SIDE,CELL_INSET),1260,y-120,'Origem da face '+label)
