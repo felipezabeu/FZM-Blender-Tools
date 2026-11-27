@@ -72,9 +72,9 @@ No Blender: `Edit > Preferences > Get Extensions > Repositories > + > Add Remote
 
 Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto e deixe o Home Builder original desativado. Desative a cópia local do FZM Builder antes de habilitar a versão do repositório remoto. Mantenha somente uma instância ativa; a integração ainda utiliza os mesmos IDs dos operadores do Home Builder original. Depois da configuração inicial, use a sincronização e a atualização de extensões do próprio Blender.
 
-## Pintura de portas e rodapés no FZM Builder 5.1.24
+## Pintura de portas, molduras e rodapés no FZM Builder
 
-- **N → FZM Builder → Room Layout → Doors & Windows → Door Paint:** selecione uma porta 3D ou uma parte dela. A cor altera a folha pintável e não muda ferragens, vidro, espelho ou casing.
+- **N → FZM Builder → Room Layout → Doors & Windows → Door Paint:** selecione uma porta 3D ou uma parte dela. Marque **Paint Door Leaf** para mudar a folha sem alterar ferragens, vidro ou espelho. Em **Casing Color**, escolha **Keep Existing**, **Same as Door** ou **Different Color**. Dá para mudar só a moldura deixando **Paint Door Leaf** desmarcado.
 - **N → FZM Builder → Room Layout → Floor & Ceiling → Baseboard Paint:** selecione o rodapé, o piso do cômodo ou, para rodapés anexados diretamente à parede, a própria parede.
 - Os dois comandos aceitam **HEX**, **RGB** ou **Palette**. Use **Selection** ou **All in Scene**; **Use Default White** restaura o branco. Peças novas continuam brancas por padrão. Para ver o resultado, use **Material Preview**.
 

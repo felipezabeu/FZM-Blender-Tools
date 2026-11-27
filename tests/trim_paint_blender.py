@@ -112,6 +112,65 @@ select(v1)
 assert paint('DOORS', trim_white=True) == {'FINISHED'}
 assert faces_with_material(v1) == before[v1]
 
+# An existing manually assigned casing must remain untouched unless opted in.
+legacy = bpy.data.materials.new('Custom legacy casing')
+select(v1, v2)
+assert bpy.ops.fzm_builder.door_casing(profile='COLONIAL', material=legacy.name) == {'FINISHED'}
+def casing_for(cage):
+    return next(part for part in cage.children if part.get(finishes.CASING))
+
+c1, c2 = casing_for(d1), casing_for(d2)
+geometry1 = c1.data
+select(c1)
+assert paint('DOORS', '#ABCDEF') == {'FINISHED'}
+assert c1.material_slots[0].material == legacy
+assert paint('DOORS', paint_leaf=False, casing_mode='MATCH') == {'FINISHED'}
+assert c1.material_slots[0].material == d1[trim.KEY]
+assert c1.data == geometry1 and len(c1.data.shape_keys.key_blocks) == 4
+assert paint('DOORS', '#314159') == {'FINISHED'}
+assert c1.material_slots[0].material == d1[trim.KEY]
+assert c2.material_slots[0].material == legacy
+assert paint('DOORS', trim_white=True) == {'FINISHED'}
+assert c1.material_slots[0].material == nd.material('white')
+assert faces_with_material(v1) == before[v1]
+
+# Custom mode uses its own input and does not change the leaf. A later
+# casing rebuild must keep it, even if the profile tool has a default material.
+select(v1)
+assert paint('DOORS', paint_leaf=False, casing_mode='CUSTOM', casing_hex_color='#D4B624') == {'FINISHED'}
+independent = c1.material_slots[0].material
+assert independent.name.endswith('#D4B624')
+assert faces_with_material(v1) == before[v1]
+assert paint('DOORS', '#654321') == {'FINISHED'}
+assert independent == c1.material_slots[0].material
+assert bpy.ops.fzm_builder.door_casing(profile='STEP_BEVEL', material=legacy.name) == {'FINISHED'}
+c1 = casing_for(d1)
+assert independent == c1.material_slots[0].material
+assert len(c1.data.shape_keys.key_blocks) == 4
+assert c2.material_slots[0].material == legacy
+select(v1)
+try:
+    paint('DOORS', '#111111', casing_mode='CUSTOM', casing_hex_color='invalid')
+except RuntimeError:
+    pass  # Blender promotes the operator's validation report to RuntimeError.
+assert d1[trim.KEY].name.endswith('#654321') and c1.material_slots[0].material == independent
+
+# A casing may be painted before its geometry exists without generating it.
+d3, v3 = pairs[-1]
+select(v3)
+assert paint('DOORS', paint_leaf=False, casing_mode='CUSTOM', casing_input_mode='RGB',
+             casing_rgb_color=(.2, .4, .6)) == {'FINISHED'}
+assert not any(part.get(finishes.CASING) for part in d3.children)
+assert bpy.ops.fzm_builder.door_casing() == {'FINISHED'}
+assert casing_for(d3).material_slots[0].material.name.endswith('#336699')
+
+if path_to_palette := os.environ.get('FZM_SW_TEST_ASE'):
+    assert bpy.ops.fzm_builder.import_paint_palette(filepath=path_to_palette) == {'FINISHED'}
+    select(casing_for(d3))
+    assert paint('DOORS', paint_leaf=False, casing_mode='CUSTOM', casing_input_mode='PALETTE',
+                 casing_paint_code='Snowbound (SW 7004)') == {'FINISHED'}
+    assert casing_for(d3).material_slots[0].material.name.endswith('Snowbound (SW 7004)')
+
 select(front, east, north, west)
 assert bpy.ops.home_builder_walls.add_floor() == {'FINISHED'}
 floor = next(obj for obj in C.scene.objects if obj.get('IS_FLOOR_BP'))
@@ -137,9 +196,12 @@ select(floor)
 assert bpy.ops.fzm_builder.wall_paint(target='WALLS', scope='ROOM', hex_color='#123456') == {'FINISHED'}
 assert base.material_slots[0].material == board_color and v2.parent[trim.KEY].name == saved_color
 path = str(Path(os.environ['FZM_TEST_TEMP']) / 'paint-roundtrip.blend')
-v2_name, base_name = v2.name, base.name
+v2_name, base_name, casing_name = v2.name, base.name, c1.name
 bpy.ops.wm.save_as_mainfile(filepath=path)
 bpy.ops.wm.open_mainfile(filepath=path)
 assert saved_color in faces_with_material(bpy.data.objects[v2_name])
 assert bpy.data.objects[base_name].material_slots[0].material.name.endswith('#E2DDD0')
-print('DOOR AND BASEBOARD PAINT PASSED')
+casing_reopened = bpy.data.objects[casing_name]
+assert casing_reopened.material_slots[0].material.name.endswith('#D4B624')
+assert casing_reopened.parent[finishes.CASING_PAINT_MODE] == 'CUSTOM'
+print('DOOR, CASING, AND BASEBOARD PAINT PASSED')
