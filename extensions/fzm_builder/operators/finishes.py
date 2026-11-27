@@ -512,14 +512,30 @@ def casing_paint_material(door):
     return None
 
 
+def casing_collections(context, door):
+    # A door can be directly in the 3D scene and also in the source
+    # collection instanced by a drawing. users_collection[0] can be the
+    # drawing collection, which is not necessarily part of this scene.
+    root = context.scene.collection
+    scene_collections = {root, *root.children_recursive}
+    matches = tuple(c for c in door.users_collection if c.is_editable)
+    if not scene_collections.intersection(matches):
+        raise ValueError(f'{door.name} is not in an editable collection in this scene.')
+    # Follow all of the door's editable memberships, including the plan
+    # source, and never make an unrelated duplicate of the casing object.
+    return matches
+
+
 def make_casing(context, door, profile, width, projection, material):
     cage,dimensions = _cage_dimensions(door)
+    destinations = casing_collections(context, door)
     cross_section=trim_profiles.CASING_PROFILES[profile]
     vertices, faces = casing_vertices(cross_section, *dimensions, width, projection)
     mesh = create_mesh('Door Casing', vertices, faces)
     casing = bpy.data.objects.new('Door Casing', mesh)
     try:
-        (door.users_collection[0] if door.users_collection else context.collection).objects.link(casing)
+        for collection in destinations:
+            collection.objects.link(casing)
         casing.parent = door
         casing[CASING] = True
         door_units.protect_part(casing)
