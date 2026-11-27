@@ -37,13 +37,14 @@ jobs:
           mkdir -p site
           "$B" --command extension build --source-dir ./extensions/fzm_vanity_controls --output-dir ./site
           "$B" --command extension build --source-dir ./extensions/fzm_tile_panels --output-dir ./site
+          "$B" --command extension build --source-dir ./extensions/fzm_niche_autocut --output-dir ./site
           "$B" --command extension build --source-dir ./extensions/fzm_builder --output-dir ./site --split-platforms
-          for archive in site/fzm_builder-*.zip; do
+          for archive in site/fzm_builder-*.zip site/fzm_niche_autocut-*.zip; do
             "$B" --command extension validate "$archive"
           done
           "$B" --command extension server-generate --repo-dir ./site --html
           test -s site/index.json
-      - name: Verify generated Builder listing
+      - name: Verify generated Builder and AutoCut listings
         run: |
           python3 - <<'PYINDEX'
           from pathlib import Path
@@ -55,8 +56,14 @@ jobs:
           builder = [entry for entry in entries if entry["id"] == manifest["id"]]
           assert len(builder) == len(manifest["platforms"]), builder
           assert {tuple(entry["platforms"]) for entry in builder} == {(platform,) for platform in manifest["platforms"]}, builder
-          for entry in builder:
-              assert entry["version"] == manifest["version"], entry
+          assert all(entry["version"] == manifest["version"] for entry in builder), builder
+          niche_manifest = tomllib.loads(Path("extensions/fzm_niche_autocut/blender_manifest.toml").read_text(encoding="utf-8"))
+          niche = [entry for entry in entries if entry["id"] == niche_manifest["id"]]
+          assert len(niche) == 1, niche
+          assert niche[0]["version"] == niche_manifest["version"], niche
+          assert niche[0]["blender_version_min"] == niche_manifest["blender_version_min"], niche
+          assert not niche[0].get("platforms") and not niche[0].get("wheels"), niche
+          for entry in builder + niche:
               archive = site / entry["archive_url"].removeprefix("./")
               assert archive.stat().st_size == entry["archive_size"], entry
               assert "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() == entry["archive_hash"], entry
