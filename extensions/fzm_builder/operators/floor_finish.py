@@ -8,7 +8,9 @@ from uuid import uuid4
 import bpy
 
 from .floor_tiles import apply_floor_base_finish, floor_surface_indices, get_spec
-from .floor_wood import BOARD_DIMENSIONS, BOARD_LENGTH, BOARD_WIDTH, attach_board_shader
+from .floor_wood import (
+    BOARD_ANGLE, BOARD_DIMENSIONS, BOARD_HERRINGBONE, BOARD_LENGTH, BOARD_WIDTH, attach_board_shader,
+)
 from .tile_shader import base_material
 from .tile_catalog import PORCELAIN_PREFIX, TILE_FINISHES, attach_tile_finish, finish_entry
 
@@ -90,11 +92,18 @@ def create_material(data):
     if not all(isfinite(v) and v >= .001 for v in (width, height)):
         raise ValueError("The physical image repeat must be at least 1 mm.")
     board_dims = None
+    board_angle, herringbone = 0., False
     if is_wood_board_preset(data):
         board_dims = (float(data.get("board_width", BOARD_WIDTH)),
                       float(data.get("board_length", BOARD_LENGTH)))
         if not all(isfinite(v) and .00999999 <= v <= 10. for v in board_dims):
             raise ValueError("Board width and length must be between 10 mm and 10 m.")
+        board_angle = float(data.get("board_angle", 0.))
+        if not isfinite(board_angle):
+            raise ValueError("Board angle must be finite.")
+        herringbone = bool(data.get("herringbone", False))
+        if herringbone and board_dims[1] < board_dims[0]:
+            raise ValueError("For herringbone, Board Length must be at least Board Width.")
     material = bpy.data.materials.new("Floor Finish - " + data["name"])
     image = None
     try:
@@ -152,7 +161,8 @@ def create_material(data):
                 noise.location = (-365, 100)
                 ramp.location = (-165, 420)
                 joint_color = tuple(channel * .44 for channel in data["grain"][:3]) + (1.,)
-                attach_board_shader(material, pbr, uv, scale, ramp.outputs["Color"], *board_dims, joint_color)
+                attach_board_shader(material, pbr, uv, scale, ramp.outputs["Color"], *board_dims,
+                                    joint_color, angle=board_angle, herringbone=herringbone)
                 next(n for n in nodes if n.type == 'OUTPUT_MATERIAL').location = (755, 240)
             else:
                 links.new(ramp.outputs["Color"], pbr.inputs["Base Color"])
@@ -189,6 +199,10 @@ class FZM_OT_floor_finish(bpy.types.Operator):
         subtype='DISTANCE', unit='LENGTH', description="Nominal width across the wood boards")
     board_length: bpy.props.FloatProperty(name="Board Length", default=BOARD_LENGTH, min=.01, max=10.,
         subtype='DISTANCE', unit='LENGTH', description="Nominal board length along the grain")
+    board_angle: bpy.props.FloatProperty(name="Board Angle", default=0., subtype='ANGLE', unit='ROTATION',
+        description="Direction of the wood finish only: long edge for straight boards, spine for herringbone")
+    herringbone: bpy.props.BoolProperty(name="Herringbone", default=False,
+        description="Lay the wood boards in a right-angle herringbone instead of staggered rows")
     add_to_catalog: bpy.props.BoolProperty(name="Also Save to Local Catalog")
     preset_name: bpy.props.StringProperty(name="Preset Name")
 
@@ -203,6 +217,7 @@ class FZM_OT_floor_finish(bpy.types.Operator):
             index = floor_surface_indices(obj)[0]
         except (IndexError, ValueError):
             index = -1
+        saved_angle, saved_herringbone = 0., False
         if 0 <= index < len(obj.material_slots):
             material = base_material(obj.material_slots[index].material)
             source = material.get("fzm_floor_finish_source") if material else None
@@ -218,11 +233,17 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                         self.board_width = width
                     if not self.properties.is_property_set("board_length"):
                         self.board_length = length
+                saved_angle = material.get(BOARD_ANGLE, 0.)
+                saved_herringbone = material.get(BOARD_HERRINGBONE, False)
             elif row and row.get("texture", "").startswith(PORCELAIN_PREFIX):
                 if not self.properties.is_property_set("mode"):
                     self.mode = 'CATALOG'
                 if not self.properties.is_property_set("preset"):
                     self.preset = source
+        if not self.properties.is_property_set("board_angle"):
+            self.board_angle = saved_angle
+        if not self.properties.is_property_set("herringbone"):
+            self.herringbone = saved_herringbone
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def draw(self, context):
@@ -234,10 +255,12 @@ class FZM_OT_floor_finish(bpy.types.Operator):
             if is_wood_board_preset(row):
                 layout.prop(self, "board_width")
                 layout.prop(self, "board_length")
+                layout.prop(self, "board_angle")
+                layout.prop(self, "herringbone")
                 layout.label(text="View the boards in Material Preview or Rendered mode.")
                 if get_spec(context.active_object):
-                    layout.label(text="Tile joints are active on this floor.", icon='INFO')
-                    layout.label(text="Choose No Tile Layout to show the wood joints.")
+                    layout.label(text="Floor Tile Layout overrides wood joints.", icon='INFO')
+                    layout.label(text="In Floor Tile Layout, choose No Tile Layout to see the wood pattern.")
             if row and row.get("texture", "").startswith(PORCELAIN_PREFIX) and not get_spec(context.active_object):
                 layout.label(text="Set Floor Tile Layout to shuffle the faces tile by tile.", icon='INFO')
         else:
@@ -264,7 +287,8 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                 if not data:
                     raise ValueError("Catalog preset unavailable.")
                 if is_wood_board_preset(data):
-                    data = dict(data, board_width=self.board_width, board_length=self.board_length)
+                    data = dict(data, board_width=self.board_width, board_length=self.board_length,
+                                board_angle=self.board_angle, herringbone=self.herringbone)
             elif self.add_to_catalog and not self.preset_name.strip():
                 raise ValueError("Enter a name for the catalog preset.")
             elif self.mode == 'IMAGE':
@@ -279,6 +303,8 @@ class FZM_OT_floor_finish(bpy.types.Operator):
                 raise ValueError("This floor needs the generated metric UVMap to use a texture.")
             material = create_material(data)
             apply_finish(obj, material)
+            if is_wood_board_preset(data) and get_spec(obj):
+                self.report({'INFO'}, "Wood finish applied. Set Floor Tile Layout to No Tile Layout to show wood joints.")
         except (ValueError, OSError, RuntimeError, TypeError) as error:
             if material is not None and material.users == 0:
                 bpy.data.materials.remove(material)

@@ -5,6 +5,7 @@ from .. import hb_details
 from ..operators.shower_fixtures import FIXTURE, fixture_from
 from ..operators.wall_divider import divider_wall
 from ..operators.shower_area import WALL_DIVIDERS
+from ..operators import room_lights
 
 CATEGORY_NAME = "FZM Builder"
 # =============================================================================
@@ -445,6 +446,7 @@ class HOME_BUILDER_PT_room_layout_floor(bpy.types.Panel):
         paint.target = "WALLS"
         paint.scope = "ROOM"
         layout.operator("home_builder_walls.add_ceiling")
+        layout.operator("fzm_builder.update_ceiling_outline", icon="FILE_REFRESH")
 
 
 # SUBPANEL: Wall Tiles
@@ -501,11 +503,12 @@ class HOME_BUILDER_PT_room_layout_lighting(bpy.types.Panel):
         col.operator("home_builder_walls.setup_world_lighting", text="Setup World Lighting", icon='WORLD')
 
         # Show management options if room lights exist
-        room_lights = [obj for obj in context.scene.objects if obj.get('IS_ROOM_LIGHT')]
-        if room_lights:
+        lights = [obj for obj in context.scene.objects if room_lights.is_light(obj)]
+        if lights:
             box = layout.box()
             row = box.row()
-            row.label(text=f"Room Lights: {len(room_lights)}", icon='OUTLINER_OB_LIGHT')
+            row.label(text=f"Room Lights: {len(lights)}", icon='OUTLINER_OB_LIGHT')
+            box.label(text="Select a fixture or its trim to edit just that light.")
             col = box.column(align=True)
             col.scale_y = 1.2
             col.operator("home_builder_walls.update_room_lights", text="Update Room Lights", icon='PREFERENCES')

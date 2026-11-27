@@ -214,19 +214,20 @@ def _unambiguous(openings):
     return [group[0] for group in result if len(group)==1]
 
 
-def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, warnings=None, partial=False):
+def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, warnings=None, partial=False, include_thresholds=True):
     """Return floor-local XY from ordered (wall, datum start XY, datum end XY).
 
     ``level`` is the world Z of the slab top. A normal room ring uses
     ``interior=True``; a room bordering the outside of a cutout ring uses False.
     Even without a door, the slab stops at the actual interior wall faces.
     An opening that crosses a corner or another opening is not partially drawn.
+    A room ceiling may use ``include_thresholds=False`` for just the wall faces.
     The caller must check the returned ring for intersections before committing.
     """
     edges=[(w,Vector(a).to_2d(),Vector(b).to_2d()) for w,a,b in edges]
     if len(edges)<3:
         raise ValueError('At least three physical wall edges are required.')
-    doors=[list(dict.fromkeys(_cuts(w,scene))) for w,_,_ in edges]
+    doors=[list(dict.fromkeys(_cuts(w,scene))) if include_thresholds else [] for w,_,_ in edges]
     world=[_vertices(floor_matrix,a,b) for _,a,b in edges]
     reference=world[0][0]
     space=sum((a-reference).cross(world[(i+1)%len(world)][0]-reference) for i,(a,_) in enumerate(world))
@@ -248,9 +249,10 @@ def physical_floor_ring(edges, floor_matrix, level, scene, *, interior=True, war
     candidates=[[(door,item) for door in group if (item:=_opening(line,door,level))]
                 for line,group in zip(lines,doors)]
     nearby=[]
-    for obj in scene.objects:
-        if (data:=_wall_data(obj)) and abs(data[0].z-level)<=LEVEL:
-            nearby.append((obj,data))
+    if any(candidates):
+        for obj in scene.objects:
+            if (data:=_wall_data(obj)) and abs(data[0].z-level)<=LEVEL:
+                nearby.append((obj,data))
     accepted=[]
     for line,cases in zip(lines,candidates):
         if not cases:

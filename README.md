@@ -38,6 +38,7 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 - **Floor Finish → Catalog** e **Shower Area → Tile Finish** têm seis acabamentos procedurais: branco com veios cinza, cinza, branco com veios bege, terrazzo claro, branco e cinza escuro. O catálogo não inclui fotos ou materiais oficiais da Besso.
 - **Floor Tile Layout → Tile Shape** e **Shower Area → Tile Shape** separam formato e acabamento. Além do retangular há quadrado, hexagonal e penny round, com tamanho e juntas ajustáveis.
 - O piso aceita uma foto local em **Floor Finish → Local Image**. Na parede do box, escolha **Custom Color or Photo → Tile-Face Photo** para importar a face de uma peça. As imagens importadas são incorporadas ao salvar o projeto.
+- Nos pisos de madeira do catálogo, **Floor Finish → Board Angle** gira só o acabamento (0° por padrão). **Herringbone** alterna a paginação de tábuas corridas para espinha de peixe. Com **Floor Tile Layout** ativo, selecione **No Tile Layout** lá para mostrar as juntas da madeira.
 
 ### FZM Builder 5.1.14
 
@@ -77,6 +78,12 @@ Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto
 - **N → FZM Builder → Room Layout → Doors & Windows → Door Paint:** selecione uma porta 3D ou uma parte dela. Marque **Paint Door Leaf** para mudar a folha sem alterar ferragens, vidro ou espelho. Em **Casing Color**, escolha **Keep Existing**, **Same as Door** ou **Different Color**. Dá para mudar só a moldura deixando **Paint Door Leaf** desmarcado.
 - **N → FZM Builder → Room Layout → Floor & Ceiling → Baseboard Paint:** selecione o rodapé, o piso do cômodo ou, para rodapés anexados diretamente à parede, a própria parede.
 - Os dois comandos aceitam **HEX**, **RGB** ou **Palette**. Use **Selection** ou **All in Scene**; **Use Default White** restaura o branco. Peças novas continuam brancas por padrão. Para ver o resultado, use **Material Preview**.
+
+## Tetos e iluminação no FZM Builder 5.1.26
+
+- Em **Room Layout → Floor & Ceiling → Add Ceiling**, o Builder cria um teto por ambiente fechado. Para dividir um teto antigo depois de adicionar paredes, selecione-o e clique em **Update Ceiling Outline**. A atualização mantém a altura e o acabamento existentes.
+- Selecione o teto do ambiente e, em **Lighting → Add Room Lights**, escolha **4″ Recessed Pot Light** ou **Custom Point** e ajuste a temperatura. Para editar ou converter uma luminária, selecione a luz ou o aro e use **Update Room Lights**.
+- O preset começa em 3000 K e 12 W de render no Blender. Isso não é potência elétrica nem conversão de lúmens; o [HALO LTC 4″ de 650 lm](https://www.cooperlighting.com/api/assets/v1/file/CLS/content/halo-ltc4-lt-dm-5cct-specsheet/HALO-4-inch-LT-Canless-LED-Downlight-spec-sheet.pdf) é só uma referência de produto. Potência e suavidade ficam em **Advanced**. O aro e a lente viajam como malha na exportação glTF/GLB; o cone de luz só é reproduzido se o visualizador carregar as luzes do glTF.
 
 ## FZM Niche AutoCut 1.0.1
 

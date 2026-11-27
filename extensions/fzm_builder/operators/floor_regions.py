@@ -301,8 +301,8 @@ def plan_regions(hosts, poly, matrix, inverse, level, walls):
     return _regions(hosts,poly,matrix,inverse,level,walls)
 
 
-def make_slab(name, poly, top, base, source, index, *, holes):
-    """Triangulate both caps with identical hole edges and close all side faces."""
+def triangulate_region(poly, holes):
+    """Constrained planar cap for floor slabs and room ceilings."""
     points, boundary_edges = [], []
     for ring in (poly,*holes):
         n = len(points)
@@ -328,6 +328,12 @@ def make_slab(name, poly, top, base, source, index, *, holes):
     actual = sum(abs((xy[b]-xy[a]).cross(xy[c]-xy[a]))/2 for a,b,c in cap)
     if expected<=outlines.SHAPE_EPS or abs(expected-actual)>max(1e-6,expected*1e-5):
         raise ValueError('The floor triangulation did not preserve the net area.')
+    return coords, cap, boundary
+
+
+def make_slab(name, poly, top, base, source, index, *, holes):
+    """Triangulate both caps with identical hole edges and close all side faces."""
+    coords, cap, boundary = triangulate_region(poly, holes)
     n = len(coords)
     verts = [(*p,z) for z in (top,base) for p in coords]
     # CCW upper triangles point out; orient every wall opposite its upper face.
