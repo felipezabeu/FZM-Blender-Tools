@@ -6,7 +6,6 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 
 | Extensão | Versão | Função |
 |---|---:|---|
-| FZM Vanity Controls | 1.2.1 | Paleta de gabinete (branco, cinza médio, azul marinho, carvalho claro); tops (quartz branco, branco com veios marcados, quartz escuro, concreto); hardware e splashes |
 | FZM Builder | 5.1.28 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
 
@@ -57,22 +56,9 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 - A barra **T** da vista 3D, em modo Objeto, tem atalhos para parede interna, porta de abrir e janela 3D. Selecione a ferramenta e depois clique na vista; os demais controles continuam no painel **N**.
 - Inclui os estilos de porta da versão de teste 5.1.13 e usa **FZM Builder** também no menu superior.
 
-### Alterações da vanity 1.2
-- Cinza atualizado para `#777B80`, um pouco mais claro do que a proposta anterior `#62666B`.
-- Azul atualizado para `#344760`, já aprovado.
-- Adicionado **Carvalho Claro**, visual procedural inspirado na referência enviada (não textura oficial do fornecedor).
-- Removido **Carrara** do menu. **Calacatta** substituído por *Branco veios marcados*, procedural com veios cinza mais fortes, inspirado na foto de referência.
-- Materiais usam prefixo `FZM_Vanity_12_*` para não reutilizar automaticamente materiais antigos de 1.1.
-
-## Geometria da vanity
-
-A divisória interna deve ser removida do **arquivo-mestre** `FZM_Vanity_Master_30_v1.blend` (e do GLB-fonte), não por um botão do add-on. O add-on serve somente para materiais, acabamentos e splashes. Modelos já arrastados ao projeto não se atualizam automaticamente quando o mestre muda.
-
 ## Instalação manual para teste
 
-No Blender, `Edit > Preferences > Get Extensions > menu > Install from Disk`, escolha o ZIP da extensão. Após ativação, a aba `N > FZM Vanity` ou `N > FZM Tile` aparecerá. A extensão da Vanity precisa encontrar uma vanity v1 com controlador `Vanity_30_Controller` e **importada como Append (não Collection Instance)**.
-
-**Não atualize diretamente o `.blend` mestre sem testar em uma cópia.** Use `Aplicar acabamentos` para testar a cor e salve o arquivo de projeto.
+No Blender, use **Edit → Preferences → Get Extensions → Install from Disk** e escolha o ZIP da extensão ativa. Para uso normal, prefira o repositório remoto abaixo.
 
 ## Publicação e atualizações remotas
 
@@ -94,15 +80,9 @@ Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto
 - Selecione o teto do ambiente e, em **Lighting → Add Room Lights**, escolha **4″ Recessed Pot Light** ou **Custom Point** e ajuste a temperatura. Para editar ou converter uma luminária, selecione a luz ou o aro e use **Update Room Lights**.
 - O preset começa em 3000 K e 12 W de render no Blender. Isso não é potência elétrica nem conversão de lúmens; o [HALO LTC 4″ de 650 lm](https://www.cooperlighting.com/api/assets/v1/file/CLS/content/halo-ltc4-lt-dm-5cct-specsheet/HALO-4-inch-LT-Canless-LED-Downlight-spec-sheet.pdf) é só uma referência de produto. Potência e suavidade ficam em **Advanced**. O aro e a lente viajam como malha na exportação glTF/GLB; o cone de luz só é reproduzido se o visualizador carregar as luzes do glTF.
 
-## FZM Niche AutoCut 1.0.1
+## Ferramentas arquivadas
 
-No repositório remoto acima, abra **Get Extensions**, atualize a lista (**Sync**) e instale **FZM Niche AutoCut**. Não é necessário baixar um ZIP. Se já instalou uma cópia de teste por ZIP, desative a cópia local para não ativar a extensão duas vezes.
-
-Em **Object Mode**, faça **Append → Collection → Shower Niche** de `29_Shower_Niche_Parametrico.blend`. Selecione o objeto **Shower Niche** e use **N → FZM Niche → Ligar recorte automático**. O recurso começa desligado para cada nicho. Recorta as malhas sólidas, locais, editáveis e visíveis no View Layer atual, sem aplicar o corte. A seleção de alvos acompanha o nicho. Para preservar um objeto específico, selecione-o e use **Proteger esta malha**.
-
-Se a peça já inserida é uma instância sem modificadores, selecione-a e use **N → FZM Niche → Tornar editável e ligar recorte**. Ela conserva a posição, ganha um cortador independente e fica selecionada. Se faltar só o cortador, **Buscar o cortador no arquivo do nicho** recupera a peça correspondente sem mover o nicho.
-
-O **Shower Area** aplica o recorte aos revestimentos antes dos acabamentos, preservando a paginação e o piso. O arquivo do asset não está incluído no pacote da extensão. Veja [o guia do AutoCut](extensions/fzm_niche_autocut/README-PT.txt) para limites e uso manual.
+**FZM Niche AutoCut** e **FZM Vanity Controls** não são mais distribuídas pelo repositório de extensões. O código foi preservado em [archive/extensions](archive/extensions/README.md). Os nichos atuais do **Shower Area** e os controles das vanities atuais fazem parte dos próprios assets; use **Modifiers** no Blender.
 
 ## Limites
 
@@ -112,4 +92,4 @@ O **Shower Area** aplica o recorte aos revestimentos antes dos acabamentos, pres
 
 ## Licenças
 
-FZM Vanity Controls e FZM Niche AutoCut: GPL-3.0-or-later. FZM Tile Panels: MIT (`LICENSE.txt` na extensão).
+FZM Tile Panels: MIT (`LICENSE.txt` na extensão). Licenças das extensões arquivadas preservadas com o código.
