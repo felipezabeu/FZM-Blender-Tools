@@ -10,6 +10,7 @@ import bpy
 from .. import hb_types
 from ..units import inch
 from . import shaker_door_profiles as shaker, six_panel_doors
+from . import trim_paint
 
 
 TYPE_KEY = "FZM_NATIVE_DOOR_TYPE"
@@ -440,6 +441,7 @@ def set_options(obj, style, opening, right):
     visual.set_input(STYLE, float(STYLE_VALUES[style]))
     visual.set_input(OPEN, min(1., max(0., opening)))
     visual.set_input(RIGHT, 1. if right else 0.)
+    trim_paint.sync(obj)
     obj.update_tag()
 
 
