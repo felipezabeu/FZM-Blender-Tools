@@ -16,6 +16,8 @@ from . import baseboard_perimeter, door_units, room_paint, shower_trim, trim_pro
 
 
 CASING = 'FZM_DOOR_CASING'
+CASING_PAINT_MODE = 'fzm_casing_paint_mode'
+CASING_PAINT_MATERIAL = 'fzm_casing_paint_material'
 BASEBOARD = 'FZM_ROOM_BASEBOARD'
 WALL_BASEBOARD = 'FZM_WALL_BASEBOARD'
 CUT_TOLERANCE = 0.001
@@ -105,12 +107,27 @@ class FZM_OT_import_paint_palette(bpy.types.Operator, ImportHelper):
         return {'FINISHED'}
 
 
-def search_paint_collections(operator, context, edit_text):
+PAINT_INPUTS = [
+    ('HEX', 'HEX', 'Six-digit sRGB color'),
+    ('RGB', 'RGB', 'sRGB color picker'),
+    ('PALETTE', 'Palette', 'Look up an imported or shared palette by code or name'),
+]
+
+
+def _search_paint_collections(operator, edit_text, prefix=''):
     catalog = getattr(operator, 'catalog', None)
     if catalog is None:
         return []
-    return [name for name in catalog.collections(operator.paint_code)
+    return [name for name in catalog.collections(getattr(operator, prefix + 'paint_code'))
             if edit_text.casefold() in name.casefold()]
+
+
+def search_paint_collections(operator, context, edit_text):
+    return _search_paint_collections(operator, edit_text)
+
+
+def search_casing_paint_collections(operator, context, edit_text):
+    return _search_paint_collections(operator, edit_text, 'casing_')
 
 
 class FZM_OT_wall_paint(bpy.types.Operator):
@@ -128,7 +145,7 @@ class FZM_OT_wall_paint(bpy.types.Operator):
     ])
     target: bpy.props.EnumProperty(items=[
         ('WALLS', 'Walls', 'Paint walls'),
-        ('DOORS', 'Doors', 'Paint door leaves without changing glass, hardware, or casing'),
+        ('DOORS', 'Doors', 'Paint door leaves and casings without changing glass or hardware'),
         ('BASEBOARDS', 'Baseboards', 'Paint generated baseboards'),
     ], options={'HIDDEN', 'SKIP_SAVE'})
     trim_scope: bpy.props.EnumProperty(name='Apply To', items=[
@@ -137,11 +154,22 @@ class FZM_OT_wall_paint(bpy.types.Operator):
     ])
     trim_white: bpy.props.BoolProperty(name='Use Default White', default=False)
 
-    input_mode: bpy.props.EnumProperty(name='Input', items=[
-        ('HEX', 'HEX', 'Six-digit sRGB color'),
-        ('RGB', 'RGB', 'sRGB color picker'),
-        ('PALETTE', 'Palette', 'Look up an imported or shared palette by code or name'),
-    ])
+    paint_leaf: bpy.props.BoolProperty(name='Paint Door Leaf', default=True, options={'SKIP_SAVE'})
+    casing_mode: bpy.props.EnumProperty(name='Casing Color', items=[
+        ('KEEP', 'Keep Existing', 'Keep the current casing finish or its existing link to the door'),
+        ('MATCH', 'Same as Door', 'Match the leaf color, including future changes to the door color'),
+        ('CUSTOM', 'Different Color', 'Choose an independent color for the casing'),
+    ], options={'SKIP_SAVE'})
+    input_mode: bpy.props.EnumProperty(name='Input', items=PAINT_INPUTS)
+    casing_input_mode: bpy.props.EnumProperty(name='Input', items=PAINT_INPUTS)
+    casing_hex_color: bpy.props.StringProperty(name='HEX', default='#FFFFFF')
+    casing_rgb_color: bpy.props.FloatVectorProperty(
+        name='RGB', size=3, min=0, max=1, subtype='COLOR_GAMMA', default=(1., 1., 1.),
+    )
+    casing_paint_code: bpy.props.StringProperty(name='Code or Name')
+    casing_paint_collection: bpy.props.StringProperty(
+        name='Palette File', search=search_casing_paint_collections,
+    )
     hex_color: bpy.props.StringProperty(name='HEX', default='#E6DED4')
     paint_code: bpy.props.StringProperty(
         name='Code or Name', description='Example: OC-65 or Chantilly Lace',
@@ -162,16 +190,34 @@ class FZM_OT_wall_paint(bpy.types.Operator):
             self.scope = 'ROOM'
         self.catalog = wall_paint_catalog()
         title = {'WALLS': 'Wall Paint', 'DOORS': 'Door Paint', 'BASEBOARDS': 'Baseboard Paint'}[self.target]
+        if self.target == 'DOORS':
+            # Editing just the casing should not repaint a leaf by accident.
+            self.trim_scope = 'SELECTION'
+            self.paint_leaf = False
+            self.casing_mode = 'KEEP'
         return context.window_manager.invoke_props_dialog(self, title=title)
 
     def check(self, context):
         return self.target != 'WALLS' or self.input_mode == 'PALETTE'
 
     def draw(self, context):
+        if self.target == 'DOORS':
+            self.layout.prop(self, 'trim_scope')
+            self.layout.label(text='Select the door or its casing.')
+            leaf = self.layout.box()
+            leaf.prop(self, 'paint_leaf')
+            if self.paint_leaf:
+                leaf.prop(self, 'trim_white')
+                if not self.trim_white:
+                    self.draw_color(leaf)
+            casing = self.layout.box()
+            casing.prop(self, 'casing_mode')
+            if self.casing_mode == 'CUSTOM':
+                self.draw_color(casing, 'casing_')
+            return
         if self.target != 'WALLS':
             self.layout.prop(self, 'trim_scope')
-            self.layout.label(text=('Select a door or one of its parts.' if self.target == 'DOORS'
-                                    else 'Select baseboards, their floor, or their wall.'))
+            self.layout.label(text='Select baseboards, their floor, or their wall.')
             self.layout.prop(self, 'trim_white')
             if not self.trim_white:
                 self.draw_color()
@@ -186,89 +232,128 @@ class FZM_OT_wall_paint(bpy.types.Operator):
 
         self.draw_color()
 
-    def draw_color(self):
-        self.layout.prop(self, 'input_mode', expand=True)
-        if self.input_mode != 'PALETTE':
-            self.layout.prop(self, 'hex_color' if self.input_mode == 'HEX' else 'rgb_color')
+    def draw_color(self, layout=None, prefix=''):
+        layout = self.layout if layout is None else layout
+        input_mode = getattr(self, prefix + 'input_mode')
+        layout.prop(self, prefix + 'input_mode', expand=True)
+        if input_mode != 'PALETTE':
+            layout.prop(self, prefix + ('hex_color' if input_mode == 'HEX' else 'rgb_color'))
             return
 
-        self.layout.prop(self, 'paint_code')
-        if self.paint_collection or len(self.catalog.collections(self.paint_code)) > 1:
-            self.layout.prop(self, 'paint_collection')
-        if self.paint_code.strip():
+        code = getattr(self, prefix + 'paint_code')
+        collection = getattr(self, prefix + 'paint_collection')
+        layout.prop(self, prefix + 'paint_code')
+        if collection or len(self.catalog.collections(code)) > 1:
+            layout.prop(self, prefix + 'paint_collection')
+        if code.strip():
             try:
-                swatch = self.find_swatch(self.catalog)
+                swatch = self.find_swatch(self.catalog, prefix)
                 name = ' '.join(filter(None, (swatch.code, swatch.name)))
-                self.layout.label(text=name, icon='COLOR')
+                layout.label(text=name, icon='COLOR')
             except ValueError as error:
-                self.layout.label(text=str(error), icon='INFO')
+                layout.label(text=str(error), icon='INFO')
 
-    def find_swatch(self, catalog):
+    def find_swatch(self, catalog, prefix=''):
+        code = getattr(self, prefix + 'paint_code')
+        collection = getattr(self, prefix + 'paint_collection')
         if not catalog.names:
             raise ValueError('Import an ASE file or add it to Paletas/Benjamin Moore')
-        if not self.paint_code.strip():
+        if not code.strip():
             raise ValueError('Enter a paint code or name')
-        swatch = catalog.lookup(self.paint_code, self.paint_collection)
+        swatch = catalog.lookup(code, collection)
         if not swatch:
-            message = 'Swatch not found in the loaded palettes'
-            if self.paint_collection:
-                message = 'Swatch not found in that palette file'
+            message = 'Swatch not found in that palette file' if collection else 'Swatch not found in the loaded palettes'
             if catalog.skipped:
                 message += f' ({len(catalog.skipped)} unreadable)'
             raise ValueError(message)
         return swatch
 
-    def make_material(self):
-        swatch = None
-        if self.input_mode == 'PALETTE':
-            swatch = self.find_swatch(wall_paint_catalog())
-            color = swatch.rgb
-        else:
-            color = parse_hex(self.hex_color) if self.input_mode == 'HEX' else self.rgb_color
-        return paint_material(color, swatch)
+    def color_values(self, prefix=''):
+        input_mode = getattr(self, prefix + 'input_mode')
+        if input_mode == 'PALETTE':
+            swatch = self.find_swatch(wall_paint_catalog(), prefix)
+            return swatch.rgb, swatch
+        color = (parse_hex(getattr(self, prefix + 'hex_color')) if input_mode == 'HEX'
+                 else getattr(self, prefix + 'rgb_color'))
+        return color, None
 
-    def execute_trim(self, context):
+    def make_material(self):
+        return paint_material(*self.color_values())
+
+    def execute_door_paint(self, sources):
         from . import hinged_doors, native_doors
 
-        sources = context.scene.objects if self.trim_scope == 'ALL' else context.selected_objects
-        if self.target == 'DOORS':
-            doors = {door for obj in sources if (door := door_units.cage_for(obj))
-                     and trim_paint.editable(door)}
-            targets = [(door, part) for door in doors if (part := (
-                native_doors.visual_for(door) or hinged_doors.visual_for(door)))
-                and trim_paint.can_paint(part)]
-        else:
-            props = (BASEBOARD, WALL_BASEBOARD)
-            objects = set(sources)
-            if self.trim_scope == 'SELECTION':
-                objects.update(child for obj in sources for child in obj.children)
-            targets = [(obj, None) for obj in objects if obj.type == 'MESH'
-                       and trim_paint.editable(obj) and any(obj.get(key) for key in props)]
-        if not targets:
-            self.report({'WARNING'}, 'No paintable objects in the chosen selection or scope.')
+        if not self.paint_leaf and self.casing_mode == 'KEEP':
+            self.report({'WARNING'}, 'Enable Paint Door Leaf or choose a Casing Color.')
+            return {'CANCELLED'}
+        doors = {door for obj in sources if (door := door_units.cage_for(obj)) and trim_paint.editable(door)}
+        entries = []
+        for door in sorted(doors, key=lambda item: item.name):
+            part = native_doors.visual_for(door) or hinged_doors.visual_for(door)
+            can_paint_leaf = self.paint_leaf and part is not None and trim_paint.can_paint(part)
+            if can_paint_leaf or self.casing_mode != 'KEEP':
+                entries.append((door, part if can_paint_leaf else None))
+        if not entries:
+            self.report({'WARNING'}, 'No paintable doors in the chosen selection or scope.')
             return {'CANCELLED'}
         try:
-            material = (None if self.target == 'DOORS' else white_baseboard()) if self.trim_white else self.make_material()
+            leaf_values = self.color_values() if any(part for _, part in entries) and not self.trim_white else None
+            casing_values = self.color_values('casing_') if self.casing_mode == 'CUSTOM' else None
         except ValueError as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-        for obj, part in targets:
+        leaf = paint_material(*leaf_values) if leaf_values else None
+        casing = paint_material(*casing_values) if casing_values else None
+        deferred = 0
+        for door, part in entries:
             if part is not None:
-                if material is None:
-                    if trim_paint.KEY in obj:
-                        del obj[trim_paint.KEY]
+                if leaf is None:
+                    if trim_paint.KEY in door:
+                        del door[trim_paint.KEY]
                 else:
-                    obj[trim_paint.KEY] = material
+                    door[trim_paint.KEY] = leaf
                 trim_paint.sync(part)
-            else:
-                if not obj.material_slots:
-                    if obj.data.users > 1:
-                        obj.data = obj.data.copy()
-                    obj.data.materials.append(material)
-                for slot in obj.material_slots:
-                    slot.link = 'OBJECT'
-                    slot.material = material
-        self.report({'INFO'}, f'Painted {len(targets)} {self.target.lower()}')
+            if self.casing_mode != 'KEEP':
+                door[CASING_PAINT_MODE] = self.casing_mode
+                if casing:
+                    door[CASING_PAINT_MATERIAL] = casing
+                elif CASING_PAINT_MATERIAL in door:
+                    del door[CASING_PAINT_MATERIAL]
+            material = casing_paint_material(door)
+            if material:
+                casings = [obj for obj in door.children if obj.get(CASING)
+                           and obj.type == 'MESH' and trim_paint.editable(obj)]
+                for obj in casings:
+                    assign_object_material(obj, material)
+                if not casings and self.casing_mode != 'KEEP':
+                    deferred += 1
+        message = f'Updated paint settings for {len(entries)} door(s)'
+        if deferred:
+            message += f'; casing color saved for {deferred} opening(s) without casing'
+        self.report({'INFO'}, message)
+        return {'FINISHED'}
+
+    def execute_trim(self, context):
+        sources = context.scene.objects if self.trim_scope == 'ALL' else context.selected_objects
+        if self.target == 'DOORS':
+            return self.execute_door_paint(sources)
+
+        objects = set(sources)
+        if self.trim_scope == 'SELECTION':
+            objects.update(child for obj in sources for child in obj.children)
+        targets = [obj for obj in objects if obj.type == 'MESH' and trim_paint.editable(obj)
+                   and (obj.get(BASEBOARD) or obj.get(WALL_BASEBOARD))]
+        if not targets:
+            self.report({'WARNING'}, 'No paintable baseboards in the chosen selection or scope.')
+            return {'CANCELLED'}
+        try:
+            material = white_baseboard() if self.trim_white else self.make_material()
+        except ValueError as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        for obj in targets:
+            assign_object_material(obj, material)
+        self.report({'INFO'}, f'Painted {len(targets)} baseboards')
         return {'FINISHED'}
 
     def execute(self, context):
@@ -407,6 +492,26 @@ def _cage_dimensions(door):
     return cage,dims
 
 
+def assign_object_material(obj, material):
+    if not obj.material_slots:
+        if obj.data.users > 1:
+            obj.data = obj.data.copy()
+        obj.data.materials.append(material)
+    for slot in obj.material_slots:
+        slot.link = 'OBJECT'
+        slot.material = material
+
+
+def casing_paint_material(door):
+    mode = door.get(CASING_PAINT_MODE)
+    if mode == 'MATCH':
+        from .native_doors import material
+        return door.get(trim_paint.KEY) or material('white')
+    if mode == 'CUSTOM':
+        return door.get(CASING_PAINT_MATERIAL)
+    return None
+
+
 def make_casing(context, door, profile, width, projection, material):
     cage,dimensions = _cage_dimensions(door)
     cross_section=trim_profiles.CASING_PROFILES[profile]
@@ -422,6 +527,7 @@ def make_casing(context, door, profile, width, projection, material):
         casing['fzm_casing_profile_revision'] = trim_profiles.REVISION if profile != 'FLAT' else 1
         casing['width'] = width
         casing['projection'] = projection
+        material = casing_paint_material(door) or material
         if material:
             mesh.materials.append(material)
 
@@ -493,8 +599,8 @@ class FZM_OT_door_casing(bpy.types.Operator):
             self.profile = old['profile']
             self.width = old['width']
             self.projection = old['projection']
-            if old.data.materials:
-                self.material = old.data.materials[0].name if old.data.materials[0] else ''
+            if old.material_slots and old.material_slots[0].material:
+                self.material = old.material_slots[0].material.name
         return context.window_manager.invoke_props_dialog(self,width=385)
 
     def draw(self, context):
@@ -509,6 +615,8 @@ class FZM_OT_door_casing(bpy.types.Operator):
         if not self.remove:
             for name in ('profile', 'width', 'projection'):
                 layout.prop(self, name)
+            if any(door.get(CASING_PAINT_MODE) for door in casing_targets(context, self.scope)):
+                layout.label(text='Door Paint colors override this material.', icon='INFO')
             layout.prop_search(self, 'material', bpy.data, 'materials')
 
     def execute(self, context):
