@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "fzm_niche_autocut"
-version = "1.0.0"
+version = "1.0.1"
 name = "FZM Niche AutoCut"
 tagline = "Live non-destructive wall cuts for FZM Shower Niche"
 maintainer = "FZM Blender Tools"
