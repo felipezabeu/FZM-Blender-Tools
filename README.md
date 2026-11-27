@@ -72,6 +72,14 @@ No Blender: `Edit > Preferences > Get Extensions > Repositories > + > Add Remote
 
 Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto e deixe o Home Builder original desativado. Desative a cópia local do FZM Builder antes de habilitar a versão do repositório remoto. Mantenha somente uma instância ativa; a integração ainda utiliza os mesmos IDs dos operadores do Home Builder original. Depois da configuração inicial, use a sincronização e a atualização de extensões do próprio Blender.
 
+## FZM Niche AutoCut 1.0.0
+
+No repositório remoto acima, abra **Get Extensions**, atualize a lista (**Sync**) e instale **FZM Niche AutoCut**. Não é necessário baixar um ZIP. Se já instalou uma cópia de teste por ZIP, desative a cópia local para não ativar a extensão duas vezes.
+
+Em **Object Mode**, faça **Append → Collection → Shower Niche** de `29_Shower_Niche_Parametrico.blend`. Selecione o objeto **Shower Niche** e use **N → FZM Niche → Ligar recorte automático**. O recurso começa desligado para cada nicho. Recorta as malhas sólidas, locais, editáveis e visíveis no View Layer atual, sem aplicar o corte. A seleção de alvos acompanha o nicho. Para preservar um objeto específico, selecione-o e use **Proteger esta malha**.
+
+O **Shower Area** aplica o recorte aos revestimentos antes dos acabamentos, preservando a paginação e o piso. O arquivo do asset não está incluído no pacote da extensão. Veja [o guia do AutoCut](extensions/fzm_niche_autocut/README-PT.txt) para limites e uso manual.
+
 ## Limites
 
 - Não são acabamentos nem modelos oficiais da Topcan/Besso. Verificar licenças e medidas para obras.
@@ -80,4 +88,4 @@ Para migrar uma instalação anterior feita por ZIP, salve uma cópia do projeto
 
 ## Licenças
 
-FZM Vanity Controls: GPL-3.0-or-later. FZM Tile Panels: MIT (`LICENSE.txt` na extensão).
+FZM Vanity Controls e FZM Niche AutoCut: GPL-3.0-or-later. FZM Tile Panels: MIT (`LICENSE.txt` na extensão).

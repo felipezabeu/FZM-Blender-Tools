@@ -1,0 +1,10 @@
+schema_version = "1.0.0"
+id = "fzm_niche_autocut"
+version = "1.0.0"
+name = "FZM Niche AutoCut"
+tagline = "Live non-destructive wall cuts for FZM Shower Niche"
+maintainer = "FZM Blender Tools"
+type = "add-on"
+tags = ["Object"]
+blender_version_min = "4.3.0"
+license = ["SPDX:GPL-3.0-or-later"]
