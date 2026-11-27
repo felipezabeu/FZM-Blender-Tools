@@ -12,6 +12,7 @@ class Guide:
     name: str
     start: tuple
     end: tuple
+    long_side: bool = False
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,68 @@ def square_candidates(guides,reference,offset,axis,project,pixel_radius=PIXELS):
             if distance<=pixel_radius:
                 result.append(SquareHit(g,t,distance))
     return sorted(result,key=lambda hit:(hit.pixels,hit.guide.name,hit.offset))
+
+
+@dataclass(frozen=True)
+class EdgeSquareHit:
+    guide: Guide
+    offset: tuple
+    pixels: float
+    marker: tuple
+
+
+def edge_square_candidates(guides, endpoint, fixed_end, offset, axis, project, pixel_radius=PIXELS):
+    """Put a dragged wall end exactly perpendicular to a physical long face.
+
+    The target is the foot of the perpendicular from the fixed wall end
+    onto a finite face, not a projection onto a wall's infinitely extended
+    axis or onto its short/mitered caps. Never creates a graph connection.
+    """
+    if axis not in ('FREE', 'X', 'Y') or not all(isfinite(x) for x in offset):
+        return []
+    p = project(_plus(endpoint, offset))
+    if p is None:
+        return []
+    result = []
+    for guide in guides:
+        if not guide.long_side:
+            continue
+        a, b = guide.start, guide.end
+        edge = _plus(b, a, -1.)
+        length = hypot(*edge)
+        if length <= EPS:
+            continue
+        t = _dot(_plus(fixed_end, a, -1.), edge) / (length * length)
+        if not 0. <= t <= 1.:
+            continue
+        target = _plus(a, edge, t)
+        u = _plus(fixed_end, target, -1.)
+        run = hypot(*u)
+        if run < .0254:
+            continue
+        dx, dy = _plus(target, endpoint, -1.)
+        if axis == 'X':
+            if abs(dy) > EPS:
+                continue
+            dy = 0.
+        elif axis == 'Y':
+            if abs(dx) > EPS:
+                continue
+            dx = 0.
+        q = project(_plus(endpoint, (dx, dy)))
+        if q is None:
+            continue
+        distance = hypot(q[0] - p[0], q[1] - p[1])
+        if distance > pixel_radius:
+            continue
+        # Point the preview square toward the room and along the longer
+        # available span of the receiving face.
+        sign = 1. if t <= .5 else -1.
+        marker = (target, (u[0] / run, u[1] / run),
+                  (sign * edge[0] / length, sign * edge[1] / length),
+                  min(run, length * max(t, 1. - t)))
+        result.append(EdgeSquareHit(guide, (dx, dy), distance, marker))
+    return result
 
 
 def square_markers(guides,offset):

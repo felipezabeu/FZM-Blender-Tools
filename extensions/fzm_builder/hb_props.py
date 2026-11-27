@@ -421,9 +421,9 @@ class Home_Builder_Scene_Props(PropertyGroup):
     half_wall_height: FloatProperty(name="Half Wall Height", default=inch(42),subtype='DISTANCE',precision=5)
     fake_wall_height: FloatProperty(name="Fake Wall Height", default=inch(34),subtype='DISTANCE',precision=5)
     visual_wall_snap: BoolProperty(name="Wall Drag Snap", default=True,
-        description="Snap wall editing handles to visible same-level corners and edges; hold Ctrl for grid instead")
+        description="Snap wall handles only to visible physical wall corners and edges on the same level; hold Ctrl for grid instead")
     visual_wall_square: BoolProperty(name="Snap to 90°", default=True,
-        description="Snap to an exact right angle with connected walls during wall-handle drags")
+        description="Snap to an exact right angle with connected walls or where a dragged end meets another wall face")
     wall_thickness: FloatProperty(name="Wall Thickness", default=inch(4.5),subtype='DISTANCE',precision=5)
     exterior_wall_thickness: FloatProperty(name="Exterior Wall Thickness", default=inch(6),subtype='DISTANCE',precision=5)# type: ignore
     interior_wall_thickness: FloatProperty(name="Interior Wall Thickness", default=inch(4.5),subtype='DISTANCE',precision=5)# type: ignore
