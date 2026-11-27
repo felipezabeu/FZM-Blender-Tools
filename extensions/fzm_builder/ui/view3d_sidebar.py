@@ -485,6 +485,12 @@ class HOME_BUILDER_PT_room_layout_shower(bpy.types.Panel):
         if not fixture:
             layout.label(text="Select a wall tile face.")
 
+        niche = layout.box()
+        niche.label(text="Integrated Shower Area Niches")
+        niche.operator("fzm_builder.cut_shower_niche_host", icon="MOD_BOOLEAN")
+        niche.operator("fzm_builder.remove_shower_niche_host")
+        niche.label(text="Select the Shower Area and its backing wall(s).")
+
 
 # SUBPANEL: Lighting
 class HOME_BUILDER_PT_room_layout_lighting(bpy.types.Panel):
