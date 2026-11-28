@@ -110,7 +110,7 @@ root.material_slots[0].link='OBJECT'
 root.material_slots[0].material=source_mat
 
 if case in {'connected','t','cross','door','overlap','repeat-child','mixed','legacy','raised','dangling',
-            'structure-first','structure-after','refined','refined-child','removed','paint'}:
+            'structure-first','structure-after','refined','refined-child','removed','paint','moved-and-refined'}:
     terminal = {'raised': .015, 'dangling': 0.}.get(case,0.)
     y1,y2=(.1,3.90) if case in {'connected','t','repeat-child','mixed','legacy'} else (0.,4.)
     if case=='dangling':
@@ -184,7 +184,7 @@ old_key=root.as_pointer()
 run(root)
 sizes={'connected':2,'t':3,'cross':4,'door':2,'detached':2,'mixed':3,
        'repeat-child':2,'legacy':2,'raised':1,'dangling':1,'empty':1,'bridge':2,
-       'structure-first':2,'structure-after':2,'refined':2,'refined-child':2,'removed':2,'paint':2}
+       'structure-first':2,'structure-after':2,'refined':2,'refined-child':2,'removed':2,'paint':2,'moved-and-refined':2}
 assert len(floors()) == sizes[case],(case,len(floors()),[f.name for f in floors()])
 assert root.as_pointer()==old_key and root.material_slots[0].material==source_mat
 assert all(obj.material_slots[0].material == source_mat for obj in floors())
@@ -254,6 +254,33 @@ if case in {'refined','refined-child'}:
     assert next(iter(new)).material_slots[0].material==owner.material_slots[0].material==mat
     run(next(iter(new)))
     check_slabs()
+if case=='moved-and-refined':
+    west,east=owners(1,1)[0],owners(5,1)[0]
+    east_material=bpy.data.materials.new('East finish, distinct from west')
+    east.material_slots[0].material=east_material
+    # Move a shared exterior wall out by 4 inches and stretch its
+    # connecting walls while also closing new partitions on both sides.
+    delta=.1016
+    root_walls[1].set_input('Length',4.+delta)
+    root_walls[2].obj.location.y+=delta
+    root_walls[3].obj.location.y+=delta
+    root_walls[3].set_input('Length',4.+delta)
+    partition.set_input('Length',4.+delta)
+    wall('New west partition',(0,1.6,0.),(3,1.6,0.))
+    wall('New east partition',(3,1.6,0.),(6,1.6,0.))
+    context.view_layer.update()
+    run(east)
+    assert len(floors())==4 and west in floors() and east in floors()
+    for x,material in ((1,west.material_slots[0].material),(5,east_material)):
+        bottom,top=owners(x,1),owners(x,4.)
+        assert len(bottom)==len(top)==1 and top!=bottom
+        assert all(f.material_slots[0].material==material for f in top+bottom)
+    assert owners(1,2.2)==[west] and owners(5,2.2)==[east]
+    check_slabs()
+    before={f:f.data for f in floors()}
+    run(east)
+    assert before=={f:f.data for f in floors()}
+
 if case=='paint':
     rp=__import__(pkg+'.operators.room_paint',fromlist=[''])
     west,east=owners(1,2)[0],owners(4,2)[0]

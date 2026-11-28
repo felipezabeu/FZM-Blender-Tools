@@ -6,8 +6,12 @@ Extensões internas da FZM Renovations para **Blender 5.1.2**. Este repositório
 
 | Extensão | Versão | Função |
 |---|---:|---|
-| FZM Builder | 5.1.30 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
+| FZM Builder | 5.1.31 | Paredes, pisos, portas, janelas e acabamentos de reforma; aba da vista 3D: `N > FZM Builder` |
 | FZM Tile Panels | 1.0.0 | Painéis retangulares de tile com paginação, tamanhos e grout |
+
+### FZM Builder 5.1.31
+
+- **Update Floor Outline:** ao mover uma parede e fechar novas divisões na mesma atualização, o Builder reconstitui os ambientes existentes pelas paredes atuais antes de criar os novos pisos. Mantém os pisos e acabamentos que já existiam; se as divisões não fecharem ou ficarem ambíguas, não mescla ambientes.
 
 ### FZM Builder 5.1.30
 

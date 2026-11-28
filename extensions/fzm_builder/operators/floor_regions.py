@@ -237,7 +237,7 @@ def _identity(hosts, *, partial=False):
     return cycle[start:] + cycle[:start]
 
 
-def _regions(hosts, poly, matrix, inverse, level, walls, preferred=None, preferred_floor=None):
+def _regions(hosts, poly, matrix, inverse, level, walls, preferred=None, preferred_floor=None, reference=None):
     from .floor_partition_graph import connected_rooms
     faces = connected_rooms(hosts,poly,matrix,inverse,level,walls)
     if faces:
@@ -248,7 +248,7 @@ def _regions(hosts, poly, matrix, inverse, level, walls, preferred=None, preferr
         if preferred is not None:
             root = next((node for node in roots if node.identity == preferred),None)
             if root is None:
-                subset = _refined_rooms(preferred_floor,roots)
+                subset = _refined_rooms(preferred_floor,roots,reference=reference)
                 if not subset:
                     raise ValueError('The existing primary room no longer has its original set of walls. No rooms were merged or deleted.')
                 root = subset[0]
@@ -400,11 +400,16 @@ def _positive_overlap(a,b):
     return _overlap_area(a,b) > outlines.SHAPE_EPS
 
 
-def _refined_rooms(existing, possible):
-    saved = existing.get(DATUM,())
-    if len(saved)<6 or len(saved)%2:
-        return []
-    old = [Vector(saved[i:i+2]) for i in range(0,len(saved),2)]
+def _refined_rooms(existing, possible, *, reference=None):
+    if reference is None:
+        saved = existing.get(DATUM,())
+        if len(saved)<6 or len(saved)%2:
+            return []
+        old = [Vector(saved[i:i+2]) for i in range(0,len(saved),2)]
+    else:
+        old = reference().get(existing)
+        if old is None:
+            return []
     old_area = abs(area_at_origin(old))
     tolerance = max(outlines.SHAPE_EPS,old_area*1e-5)
     found = []
@@ -415,8 +420,9 @@ def _refined_rooms(existing, possible):
         overlap = _overlap_area([old],[candidate.ring])
         if overlap>tolerance and abs(overlap-size)<=tolerance:
             found.append((size,candidate))
-    # Movement, removal, merges, and unclear assignments do not destroy the
-    # finishes of existing rooms. Only a geometric refinement is inherited.
+    # A refinement must cover the full source room without crossing it.
+    # It may cover a moved source, but only if the original boundary can
+    # still be reconstructed exactly from the same walls.
     if not found or abs(sum(size for size,_ in found)-old_area)>tolerance:
         return []
     return [node for size,node in sorted(found,key=lambda row:-row[0])]
@@ -504,23 +510,47 @@ def update_family(context, selected, *, initial=None):
     root_matrix, inverse, level = outlines.floor_plane(root,top)
     if not initial:
         poly = outlines._new_outline(hosts,inverse,level)
-    root_node,inner,peers = plan if initial else _regions(
-        hosts,poly,root_matrix,inverse,level,walls,
-        preferred=_identity(root_faces,partial=True) if partitioned else None,
-        preferred_floor=root if partitioned else None)
-    root_node.obj = root
-    planned = {node.identity:node for node in inner}
-    if len(planned)!=len(inner):
-        raise ValueError('The walls do not uniquely identify separate rooms. No floors were changed.')
-    known = {root}
-    missing = []
+    family = {}
     for obj in context.scene.objects:
         if obj.get(ROOT)!=root:
             continue
         if obj.name not in context.view_layer.objects or not outlines.selected_floor(obj):
             raise ValueError('A floor in this room group is excluded or read-only. No floor was changed.')
         existing_hosts,_,_,_,_ = _read(obj,scene)
-        key = _identity(existing_hosts,partial=bool(obj.get(ENVELOPE)))
+        family[obj] = _identity(existing_hosts,partial=bool(obj.get(ENVELOPE)))
+    preferred = _identity(root_faces,partial=True) if partitioned else None
+    reference = None
+    if partitioned:
+        from functools import lru_cache
+        from .floor_partition_graph import connected_rooms
+
+        @lru_cache(maxsize=1)
+        def reference():
+            # Rewalk only already-bound walls, in their live positions.
+            # The saved coordinates are no longer a valid coverage test
+            # when the same update moves the envelope and adds partitions.
+            partial = [(root,preferred)] + [(obj,key) for obj,key in family.items()
+                                          if obj.get(ENVELOPE)]
+            wall_set = {wall for wall,_ in hosts}
+            wall_set.update(wall for _,key in partial for wall,_ in key)
+            reference_walls = [edge for edge in walls if edge.obj in wall_set]
+            if len(reference_walls) == len(walls):
+                return {}
+            by_key = defaultdict(list)
+            for spans in connected_rooms(hosts,poly,root_matrix,inverse,level,reference_walls):
+                key = _identity([(w,r) for w,r,_,_ in spans],partial=True)
+                by_key[key].append([a for _,_,a,_ in spans])
+            return {obj:by_key[key][0] for obj,key in partial if len(by_key[key]) == 1}
+    root_node,inner,peers = plan if initial else _regions(
+        hosts,poly,root_matrix,inverse,level,walls,preferred=preferred,
+        preferred_floor=root if partitioned else None,reference=reference)
+    root_node.obj = root
+    planned = {node.identity:node for node in inner}
+    if len(planned)!=len(inner):
+        raise ValueError('The walls do not uniquely identify separate rooms. No floors were changed.')
+    known = {root}
+    missing = []
+    for obj,key in family.items():
         if key not in planned:
             missing.append(obj)
         elif planned[key].obj is not None or (planned[key].source and planned[key].source!=obj):
@@ -529,7 +559,8 @@ def update_family(context, selected, *, initial=None):
             planned[key].obj = obj
             known.add(obj)
     for obj in missing:
-        subset = _refined_rooms(obj,[n for n in peers if n.obj is None and n.source is None])
+        subset = _refined_rooms(obj,[n for n in peers if n.obj is None and n.source is None],
+                                reference=reference)
         if not subset:
             raise ValueError('An existing room no longer has a unique closed wall loop. No rooms were merged or deleted.')
         subset[0].obj = obj
